@@ -5,49 +5,48 @@ import com.fasterxml.jackson.dataformat.xml.XmlMapper;
 import com.portal.dto.EmployeeListWrapper;
 import com.portal.exception.BadRequestException;
 import com.portal.model.Employee;
-import com.portal.repository.EmployeeRepository;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
- * Service dedicated to parsing XML files and persisting employee records into the database.
- * 
- * Parsing flow:
- * Receive XML -> Parse XML -> Convert to Java Object -> Store in Database.
+ * Service dedicated to parsing and validating XML files of employee records.
+ * Parsing flow: Receive XML -> Parse with XmlMapper -> Convert to List<Employee> -> Validate uniqueness.
  */
 @Service
 public class XmlParserService {
-
-    @Autowired
-    private EmployeeRepository employeeRepository;
 
     private final XmlMapper xmlMapper;
 
     public XmlParserService() {
         this.xmlMapper = new XmlMapper();
-        // Ignore unknown XML elements gracefully to prevent failures on optional attributes
         this.xmlMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
 
     /**
-     * Parses an uploaded XML multipart file and persists employee records in the database.
+     * Parses an uploaded XML multipart file into validated Employee records.
+     * Validates:
+     * - File presence and non-emptiness
+     * - .xml extension
+     * - Well-formed XML syntax
+     * - Every record has a non-blank employeeId
+     * - No duplicate employeeId values inside the same XML file
      *
-     * @param file uploaded XML multipart file
-     * @return number of records saved/updated
+     * @param file uploaded multipart XML file
+     * @return List of parsed Employee objects
      */
-    @Transactional
-    public int parseAndSave(MultipartFile file) {
-        // Step 1: Validate file presence and non-emptiness
+    public List<Employee> parseAndValidateXml(MultipartFile file) {
+        // 1. Validate file presence
         if (file == null || file.isEmpty()) {
             throw new BadRequestException("Uploaded file cannot be empty");
         }
 
-        // Step 2: Validate file extension is .xml
+        // 2. Validate file extension
         String originalFilename = file.getOriginalFilename();
         if (originalFilename == null || !originalFilename.toLowerCase().endsWith(".xml")) {
             throw new BadRequestException("Invalid file type. Only .xml files are supported");
@@ -55,10 +54,9 @@ public class XmlParserService {
 
         EmployeeListWrapper wrapper;
         try (InputStream inputStream = file.getInputStream()) {
-            // Step 3: Parse XML into Java DTO objects using Jackson XmlMapper
+            // 3. Parse XML using Jackson XmlMapper
             wrapper = xmlMapper.readValue(inputStream, EmployeeListWrapper.class);
         } catch (Exception e) {
-            // Step 4: Catch malformed XML or deserialization errors and throw a clean 400 Bad Request
             throw new BadRequestException("Malformed or invalid XML file: " + e.getMessage());
         }
 
@@ -67,12 +65,35 @@ public class XmlParserService {
         }
 
         List<Employee> employees = wrapper.getEmployees();
+        Set<String> seenIds = new HashSet<>();
+        List<String> duplicateIds = new ArrayList<>();
 
-        // Step 5: Store in database.
-        // Because employeeId is marked with @Id, saveAll() automatically updates existing rows
-        // instead of duplicating them when the same XML is uploaded again.
-        List<Employee> saved = employeeRepository.saveAll(employees);
+        // 4. Validate every record has a non-blank ID and check for in-file duplicates
+        for (int i = 0; i < employees.size(); i++) {
+            Employee emp = employees.get(i);
+            if (emp.getEmployeeId() == null || emp.getEmployeeId().trim().isEmpty()) {
+                throw new BadRequestException("Invalid record at position " + (i + 1) + ": employeeId must not be blank");
+            }
 
-        return saved.size();
+            String trimmedId = emp.getEmployeeId().trim();
+            emp.setEmployeeId(trimmedId);
+
+            if (!seenIds.add(trimmedId)) {
+                if (!duplicateIds.contains(trimmedId)) {
+                    duplicateIds.add(trimmedId);
+                }
+            }
+        }
+
+        if (!duplicateIds.isEmpty()) {
+            int displayCount = Math.min(5, duplicateIds.size());
+            String sample = String.join(", ", duplicateIds.subList(0, displayCount));
+            if (duplicateIds.size() > displayCount) {
+                sample += " (and " + (duplicateIds.size() - displayCount) + " more)";
+            }
+            throw new BadRequestException("Duplicate employee IDs found in XML: " + sample);
+        }
+
+        return employees;
     }
 }

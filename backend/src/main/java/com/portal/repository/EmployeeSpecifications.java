@@ -1,5 +1,6 @@
 package com.portal.repository;
 
+import com.portal.dto.EmployeeCriteria;
 import com.portal.model.Employee;
 import jakarta.persistence.criteria.Predicate;
 import org.springframework.data.jpa.domain.Specification;
@@ -9,29 +10,30 @@ import java.util.List;
 
 /**
  * JPA Specifications for dynamic filtering on Employee entity.
+ * Always scopes to the given active datasetId.
  * Supports:
- * - Free text search across employeeId, city, and education (case-insensitive contains, with escaped wildcards).
- * - Exact match on city (optional).
- * - Exact match on gender (optional).
+ * - Global search (OR across lower(employeeId), lower(city), lower(education))
+ * - Column-specific filters: employeeId contains, education exact, joiningYear exact,
+ *   city exact, paymentTier exact, ageMin/ageMax range, gender exact, everBenched exact,
+ *   experience exact, leaveOrNot exact.
+ * All wildcards (% and _) are escaped.
  */
 public class EmployeeSpecifications {
 
-    /**
-     * Builds a composite Specification combining search, city, and gender filters with AND.
-     *
-     * @param searchText text to search in employeeId, city, or education
-     * @param city       exact city name (optional)
-     * @param gender     exact gender (optional)
-     * @return JPA Specification for Employee
-     */
-    public static Specification<Employee> filterEmployees(String searchText, String city, String gender) {
+    public static Specification<Employee> filterEmployees(Long datasetId, EmployeeCriteria criteria) {
         return (root, query, builder) -> {
             List<Predicate> predicates = new ArrayList<>();
 
-            // 1. Search text filter: OR across lower(employeeId), lower(city), lower(education)
-            if (searchText != null && !searchText.trim().isEmpty()) {
-                String trimmed = searchText.trim();
-                String escaped = escapeLikePattern(trimmed);
+            // 1. Mandatory scope: must belong to the active dataset
+            predicates.add(builder.equal(root.get("datasetId"), datasetId));
+
+            if (criteria == null) {
+                return builder.and(predicates.toArray(new Predicate[0]));
+            }
+
+            // 2. Global search: OR across employeeId, city, education (case-insensitive contains)
+            if (criteria.getSearch() != null && !criteria.getSearch().trim().isEmpty()) {
+                String escaped = escapeLikePattern(criteria.getSearch().trim());
                 String pattern = "%" + escaped.toLowerCase() + "%";
 
                 Predicate idMatch = builder.like(builder.lower(root.get("employeeId")), pattern, '\\');
@@ -41,28 +43,65 @@ public class EmployeeSpecifications {
                 predicates.add(builder.or(idMatch, cityMatch, eduMatch));
             }
 
-            // 2. Exact city match filter (only if provided and not blank)
-            if (city != null && !city.trim().isEmpty() && !"All".equalsIgnoreCase(city.trim())) {
-                predicates.add(builder.equal(root.get("city"), city.trim()));
+            // 3. Employee ID column filter (case-insensitive contains)
+            if (criteria.getEmployeeId() != null && !criteria.getEmployeeId().trim().isEmpty()) {
+                String escaped = escapeLikePattern(criteria.getEmployeeId().trim());
+                String pattern = "%" + escaped.toLowerCase() + "%";
+                predicates.add(builder.like(builder.lower(root.get("employeeId")), pattern, '\\'));
             }
 
-            // 3. Exact gender match filter (only if provided and not blank)
-            if (gender != null && !gender.trim().isEmpty() && !"All".equalsIgnoreCase(gender.trim())) {
-                predicates.add(builder.equal(root.get("gender"), gender.trim()));
+            // 4. Education exact match
+            if (criteria.getEducation() != null && !criteria.getEducation().trim().isEmpty() && !"All".equalsIgnoreCase(criteria.getEducation().trim())) {
+                predicates.add(builder.equal(root.get("education"), criteria.getEducation().trim()));
             }
 
-            // Combine all predicates with AND
+            // 5. Joining Year exact match
+            if (criteria.getJoiningYear() != null) {
+                predicates.add(builder.equal(root.get("joiningYear"), criteria.getJoiningYear()));
+            }
+
+            // 6. City exact match
+            if (criteria.getCity() != null && !criteria.getCity().trim().isEmpty() && !"All".equalsIgnoreCase(criteria.getCity().trim())) {
+                predicates.add(builder.equal(root.get("city"), criteria.getCity().trim()));
+            }
+
+            // 7. Payment Tier exact match
+            if (criteria.getPaymentTier() != null) {
+                predicates.add(builder.equal(root.get("paymentTier"), criteria.getPaymentTier()));
+            }
+
+            // 8. Age range: minAge and maxAge
+            if (criteria.getAgeMin() != null) {
+                predicates.add(builder.greaterThanOrEqualTo(root.get("age"), criteria.getAgeMin()));
+            }
+            if (criteria.getAgeMax() != null) {
+                predicates.add(builder.lessThanOrEqualTo(root.get("age"), criteria.getAgeMax()));
+            }
+
+            // 9. Gender exact match
+            if (criteria.getGender() != null && !criteria.getGender().trim().isEmpty() && !"All".equalsIgnoreCase(criteria.getGender().trim())) {
+                predicates.add(builder.equal(root.get("gender"), criteria.getGender().trim()));
+            }
+
+            // 10. Ever Benched exact match
+            if (criteria.getEverBenched() != null && !criteria.getEverBenched().trim().isEmpty() && !"All".equalsIgnoreCase(criteria.getEverBenched().trim())) {
+                predicates.add(builder.equal(root.get("everBenched"), criteria.getEverBenched().trim()));
+            }
+
+            // 11. Experience in current domain exact match
+            if (criteria.getExperienceInCurrentDomain() != null) {
+                predicates.add(builder.equal(root.get("experienceInCurrentDomain"), criteria.getExperienceInCurrentDomain()));
+            }
+
+            // 12. Leave or not exact match (0 or 1)
+            if (criteria.getLeaveOrNot() != null) {
+                predicates.add(builder.equal(root.get("leaveOrNot"), criteria.getLeaveOrNot()));
+            }
+
             return builder.and(predicates.toArray(new Predicate[0]));
         };
     }
 
-    /**
-     * Escapes standard SQL LIKE wildcard characters (% and _) as well as backslashes (\)
-     * so user input is treated as literal text.
-     *
-     * @param text input query string
-     * @return sanitized query string with escaped wildcards
-     */
     private static String escapeLikePattern(String text) {
         if (text == null) {
             return "";

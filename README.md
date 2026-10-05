@@ -1,58 +1,86 @@
 # Employee Data Management Portal
 
-A full-stack enterprise web portal built for technical evaluation. It allows organizations to upload employee records via XML, store them in MySQL 8 using Spring Data JPA, perform dynamic multi-field search and pagination, view detailed employee modals, delete records, and stream filtered results to CSV.
+A full-stack enterprise web portal built for technical evaluation using **Spring Boot 3.2.4**, **React 18 (Vite)**, and **MySQL 8**. It provides two dedicated, role-tailored portals (**Dean Portal** and **Employee Portal**) for managing employee datasets, performing multi-column filtering, updating records, inspecting employee details, and streaming filtered records to CSV.
 
 ---
 
-## 1. Overview & Features
+> [!WARNING]
+> ### SCHEMA MIGRATION NOTICE
+> If you previously ran an earlier version of this application, you **MUST** drop the existing database before starting the backend due to primary key and entity schema updates (`Dataset` entity added, `Employee` PK migrated to auto-incrementing `Long id` with dataset-scoped unique constraints):
+> ```sql
+> DROP DATABASE employee_portal;
+> ```
+> Spring Boot will automatically recreate the database and all updated tables on startup.
 
-- **Role-Based Access Control (RBAC):** Distinct dashboards for **DEAN** (Admin) and **EMPLOYEE** roles with route guards.
-- **XML Ingestion:** Dedicated `XmlParserService` leveraging Jackson `XmlMapper` to deserialize XML datasets into JPA entities with bulk upsert (`saveAll()`).
-- **Dynamic Filter & Search:** Real-time search across Employee ID, City, and Education with wildcard escaping, alongside exact matching for City and Gender using JPA `Specification`.
-- **Server-Side Pagination:** Sorted pagination (10 records/page) by `employeeId ASC`.
-- **Interactive Details Modal:** Click-to-view modal with friendly labels and multi-modal close (X button, Close button, backdrop click, Escape key).
-- **Protected Actions:** DEAN-only XML upload and record deletion with confirmation dialogs and stopPropagation to prevent modal popups.
-- **Direct CSV Streaming:** Export all records matching the current active filters directly as a downloadable CSV.
-- **Lightweight Authentication:** HMAC-SHA256 signed stateless tokens carrying username and role without the overhead of heavy security filters.
+---
+
+## 1. Overview & Architecture
+
+### Two Dedicated Portals
+- **Landing Page (`/`):** Clean portal selector with dedicated access cards for the **Dean Portal** and **Employee Portal**.
+- **Dean Portal (`/dean/login`, `/dean/dashboard`):**
+  - **Indigo/Purple Theme** with `DEAN PORTAL` badge.
+  - **Dataset Lifecycle Management:** Initial dataset onboarding card when empty; active dataset metadata info bar + **"Replace Dataset"** modal.
+  - **Workforce Management:** Full CRUD capabilities — per-column dynamic filtering, global search, **Edit** employee modal, **Delete** employee with confirmation, view details popup, and CSV export.
+- **Employee Portal (`/employee/login`, `/employee/dashboard`):**
+  - **Teal/Green Theme** with `EMPLOYEE PORTAL` badge.
+  - **Read-Only Directory:** View active dataset metadata, friendly empty state if no dataset has been uploaded yet, dynamic per-column filtering, age range filtering, detail inspection modal, and CSV export.
+  - Upload, replace, edit, and delete operations are completely absent and blocked with `403 Forbidden` if attempted.
+
+### Dataset Ownership & Scoping
+- At most **one active dataset** exists in the system at any time.
+- All employee queries (`GET /api/employees`, `/filter-options`, single record lookup, and CSV export) are **strictly scoped** to the active dataset ID.
+- **Initial Upload (`POST /api/dataset/upload`):** Allowed only when no dataset exists; rejected with `409 Conflict` if a dataset is already active.
+- **Dataset Replace (`POST /api/dataset/replace`):** Validates and parses the new XML file **first**; upon successful validation, existing employee records are atomically replaced within a single `@Transactional` method so that invalid files never destroy existing data.
+
+### Dual-Tab Authentication & Registration
+- Reusable `AuthCard` parameterized by portal with **Sign In** and **Register** tabs.
+- Login accepts either **Username or Email** (`identifier`). Cross-portal logins (e.g., Dean logging into Employee portal) are rejected with `401 Unauthorized`.
+- Dean registration requires a valid Dean Access Code (`DEAN2026`).
+- Registration returns `201 Created` without auto-logging in, switching to the Sign In tab with a green confirmation alert.
 
 ---
 
 ## 2. Tech Stack
 
-- **Backend:** Spring Boot 3.2.4, Java 17, Maven, Lombok, Spring Data JPA, Hibernate, MySQL Connector/J, Jackson XML (`jackson-dataformat-xml`), Spring Security Crypto (BCrypt).
-- **Database:** MySQL 8 (auto-creates database `employee_portal` and tables on startup).
-- **Frontend:** React.js 18, Vite 5, Axios, React Router DOM v6, Plain CSS with CSS variables (no heavy UI frameworks).
+- **Backend:** Spring Boot 3.2.4, Java 17, Maven, Lombok, Spring Data JPA, Hibernate, MySQL Connector/J, Jackson XML (`jackson-dataformat-xml`), Spring Security Crypto (BCrypt for password hashing).
+- **Database:** MySQL 8 (auto-creates `employee_portal` database and tables on startup).
+- **Frontend:** React 18, Vite 5, Axios, React Router DOM v6, Plain CSS with theme variables (no heavy UI frameworks).
 - **Network Ports:** Backend `8080`, Frontend `5173`.
 
 ---
 
 ## 3. Prerequisites
 
-Before running the project, ensure you have installed:
-- **Java 17** (or higher)
-- **Maven 3.8+** (or use the included `./mvnw` / `mvnw.cmd` wrapper)
-- **Node.js 18+** and **npm**
-- **MySQL 8** running locally on port 3306
+Before running the application:
+1. **Java 17** (or higher)
+2. **Maven 3.8+** (or use `./mvnw` / `mvnw.cmd`)
+3. **Node.js 18+** and **npm**
+4. **MySQL 8** running on `localhost:3306`
 
 ---
 
 ## 4. Setup & Running Instructions
 
-### Step 1: Clone and Configure Database
-1. Make sure your local MySQL 8 server is running.
-2. Open `backend/src/main/resources/application.properties` and verify your MySQL credentials:
+### Step 1: Database Setup
+1. Ensure your local MySQL 8 server is running.
+2. If upgrading from a previous version, run in your MySQL shell:
+   ```sql
+   DROP DATABASE employee_portal;
+   ```
+3. Verify your MySQL credentials in `backend/src/main/resources/application.properties`:
    ```properties
    spring.datasource.username=root
    spring.datasource.password=root          # Change to your MySQL password
+   app.dean.access-code=DEAN2026            # Default Dean access code for registration
    ```
-   *(Note: The database `employee_portal` and all tables will be automatically created on first startup thanks to `createDatabaseIfNotExist=true` and `hibernate.ddl-auto=update`.)*
 
 ### Step 2: Start the Backend (Port 8080)
 ```bash
 cd backend
 mvn spring-boot:run
 ```
-*(Or on Windows without global Maven: `.\mvnw.cmd spring-boot:run`)*
+*(Or on Windows: `mvnw.cmd spring-boot:run`)*
 
 ### Step 3: Start the Frontend (Port 5173)
 ```bash
@@ -61,95 +89,100 @@ npm install
 npm run dev
 ```
 
-### Step 4: Open the Application
-Navigate to [http://localhost:5173](http://localhost:5173) in your web browser.
+### Step 4: Open Application
+Navigate to [http://localhost:5173](http://localhost:5173) in your browser.
 
 ---
 
-## 5. Login Credentials & Role Permissions
+## 5. Pre-Seeded Accounts
 
-| Username | Password | Role | Permissions |
+The application automatically seeds two test accounts on startup via `DataSeeder`:
+
+| Role | Username / Identifier | Password | Access Code | Portal URL |
+|---|---|---|---|---|
+| **DEAN** | `dean` (or `dean@portal.com`) | `dean123` | `DEAN2026` | `http://localhost:5173/dean/login` |
+| **EMPLOYEE** | `employee` (or `emp@portal.com`) | `emp123` | N/A | `http://localhost:5173/employee/login` |
+
+---
+
+## 6. Endpoints Reference
+
+### Authentication Endpoints
+| Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `dean` | `dean123` | **DEAN** | Full Access: Upload XML, Search & Filter, View Details Modal, Delete Employee, Export CSV |
-| `employee` | `emp123` | **EMPLOYEE** | Read-Only: Search & Filter, View Details Modal, Export CSV (Upload & Delete hidden and blocked) |
+| `POST` | `/api/auth/dean/login` | Public | Dean login with username or email + password. Returns token & full details. |
+| `POST` | `/api/auth/employee/login` | Public | Employee login with username or email + password. |
+| `POST` | `/api/auth/dean/register` | Public | Dean registration requiring `fullName`, `username`, `email`, `password`, and `accessCode`. Returns 201. |
+| `POST` | `/api/auth/employee/register` | Public | Employee registration requiring `fullName`, `username`, `email`, and `password`. Returns 201. |
 
----
-
-## 6. How to Test
-
-1. **Login as DEAN:**
-   - Go to `http://localhost:5173/login` and sign in with `dean` / `dean123`.
-   - You will be redirected to `/dean/dashboard`.
-2. **Upload Sample XML:**
-   - Under **Import Employee XML Dataset**, choose `sample-data/sample-employees.xml` (15 records) and click **Upload XML**.
-   - A success banner will confirm `15` records saved, and the table will automatically refresh.
-3. **Upload Full XML (Pagination Demo):**
-   - Upload `sample-data/employees-full.xml` (4,653 records).
-   - Notice the pagination bar update to `Total Records: 4,653`, with Prev/Next buttons navigating between pages.
-4. **Test Search & Filters:**
-   - In the search bar, type `Bangalore` or `Pune` (input is automatically debounced ~400ms).
-   - Select City: `Pune` and Gender: `Female`.
-   - Click **Reset** to restore default view.
-5. **View Modal:**
-   - Click on any table row to open the details popup modal.
-   - Verify friendly labels (`Left company: Yes/No`, `Tier 3`).
-   - Close using the `X` button, `Close` button, clicking the backdrop, or pressing the `Esc` key.
-6. **Test Delete (DEAN only):**
-   - Click **Delete** on an employee row.
-   - Confirm the prompt (`window.confirm`).
-   - Notice that the details modal does **not** open (due to `e.stopPropagation()`), and the record is deleted.
-7. **Export CSV:**
-   - Filter by City: `Bangalore`, then click **Export CSV**.
-   - An `employees.csv` file will download containing all records matching that filter.
-8. **Login as EMPLOYEE:**
-   - Click **Logout** in the header.
-   - Sign in as `employee` / `emp123`.
-   - You will be redirected to `/employee/dashboard`.
-   - Notice that the XML Upload card and the table Action/Delete column are completely absent.
-   - Any manual API calls to upload or delete return `403 Forbidden` with `"You don't have permission"`.
-
----
-
-## 7. API Endpoints Table
-
-| Method | Endpoint | Allowed Roles | Description |
+### Dataset Lifecycle Endpoints
+| Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `POST` | `/api/auth/login` | Public | Authenticates credentials and returns signed token carrying user role. |
-| `POST` | `/api/employees/upload` | **DEAN** | Ingests multipart `.xml` file, parses records with XmlMapper, and upserts to MySQL. |
-| `GET` | `/api/employees` | **DEAN**, **EMPLOYEE** | Retrieves paginated employees sorted by ID ascending, supporting `search`, `city`, and `gender` query params. |
-| `GET` | `/api/employees/{id}` | **DEAN**, **EMPLOYEE** | Retrieves complete details for a single employee ID (404 if not found). |
-| `DELETE` | `/api/employees/{id}` | **DEAN** | Permanently deletes an employee record by ID (204 No Content, 404 if not found). |
-| `GET` | `/api/employees/export` | **DEAN**, **EMPLOYEE** | Streams all records matching active filter specifications as a CSV attachment. |
+| `GET` | `/api/dataset/active` | DEAN, EMPLOYEE | Retrieves metadata of current active dataset (`{ exists, fileName, uploadedBy, uploadedAt, recordCount }`). |
+| `POST` | `/api/dataset/upload` | **DEAN** only | Uploads initial XML dataset. Returns 409 if a dataset is already active. |
+| `POST` | `/api/dataset/replace` | **DEAN** only | Atomically validates and replaces active dataset with a new XML file. |
+
+### Employee Management Endpoints
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| `GET` | `/api/employees` | DEAN, EMPLOYEE | Paginated employee list scoped to active dataset. Supports `search`, `employeeId`, `education`, `city`, `joiningYear`, `paymentTier`, `ageMin`, `ageMax`, `gender`, `everBenched`, `leaveOrNot`. |
+| `GET` | `/api/employees/filter-options` | DEAN, EMPLOYEE | Distinct filter dropdown values aggregated from the active dataset. |
+| `GET` | `/api/employees/{id}` | DEAN, EMPLOYEE | Retrieves complete details for an employee by database ID. |
+| `PUT` | `/api/employees/{id}` | **DEAN** only | Updates employee fields. Validates constraints and checks duplicate `employeeId` (409 Conflict). |
+| `DELETE` | `/api/employees/{id}` | **DEAN** only | Deletes employee record by database ID (204 No Content). |
+| `GET` | `/api/employees/export` | DEAN, EMPLOYEE | Streams all records matching current active filter specifications as a CSV attachment. |
 
 ---
 
-## 8. XML -> Java Object -> MySQL Flow
+## 7. Step-by-Step Testing & Evaluation Guide
 
-```
-+------------------+         +--------------------+         +---------------------+         +-------------------+
-|  1. Client POST  |  -----> |   2. XmlMapper     |  -----> | 3. List<Employee>   |  -----> | 4. Spring Data    |
-|  multipart/xml   |         |   Jackson Parsing  |         |    Java Entities    |         |    saveAll()      |
-+------------------+         +--------------------+         +---------------------+         +-------------------+
-                                                                                                      |
-                                                                                                      v
-                                                                                            +-------------------+
-                                                                                            | 5. MySQL Database |
-                                                                                            |    employees      |
-                                                                                            +-------------------+
-```
-
-1. **Receive Multipart File:** The client sends a `multipart/form-data` request with key `"file"`.
-2. **Validation:** `XmlParserService` verifies that the file is not empty and has an `.xml` extension.
-3. **Jackson XML Deserialization:** Jackson's `XmlMapper` reads the `InputStream` into the wrapper DTO `EmployeeListWrapper`.
-   - `@JacksonXmlElementWrapper(useWrapping = false)` maps repeating `<employee>` tags directly into `List<Employee>`.
-4. **Entity Mapping:** Because the XML tags match the `Employee` entity fields (`employeeId`, `education`, `city`, etc.), they map 1-to-1 without manual boilerplate.
-5. **Database Upsert:** `employeeRepository.saveAll(employees)` is executed inside a `@Transactional` block. Because `employeeId` is the primary key (`@Id`), Hibernate automatically updates existing rows on re-upload rather than generating duplicate entries.
+1. **Portal Selection Landing Page (`/`):**
+   - Visit `http://localhost:5173`.
+   - Observe the two cards: **Dean Portal** (indigo) and **Employee Portal** (teal).
+2. **Dean Onboarding Flow:**
+   - Click **Enter Dean Portal** (`/dean/login`).
+   - Sign in with `dean` / `dean123`.
+   - If no dataset is uploaded yet, an onboarding card appears with a drag-and-drop XML file dropzone.
+   - Select `sample-data/sample-employees.xml` (15 records) and click **Upload & Initialize Dataset**.
+   - Notice the green notification banner, the **Active Dataset Info Bar** displaying metadata, and the loaded employee table.
+3. **Multi-Column Filtering & Age Range:**
+   - In the filter row directly below the table headers:
+     - Filter by City (e.g., `Bangalore`).
+     - Filter by Age Range: enter `Min: 20`, `Max: 30`.
+     - Filter by Gender: select `Female`.
+   - Click **Reset** to clear all column filters.
+4. **Edit Employee Record (DEAN only):**
+   - Click the **Edit** button on any row.
+   - Notice that the detail view modal does not open (due to `e.stopPropagation()`).
+   - Modify fields (e.g. increase experience or change city) and click **Save Changes**.
+   - The table refreshes with a success toast notification.
+   - If you set an `employeeId` that already exists on another row, a clear `409 Conflict` message appears.
+5. **Delete Employee Record (DEAN only):**
+   - Click **Delete** on a row. Confirm the browser prompt.
+   - The record is removed and a success toast appears.
+6. **Replace Dataset Atomically:**
+   - Click **↻ Replace Dataset** in the Active Dataset Info Bar.
+   - Select `sample-data/employees-full.xml` (4,653 records) and confirm.
+   - The dataset is replaced cleanly; pagination updates to reflect `4,653` total records.
+7. **Export Filtered CSV:**
+   - Apply any filter and click **📥 Export CSV**.
+   - A CSV file downloads containing only records matching the active filter.
+8. **Employee Portal Read-Only Flow:**
+   - Log out from the Dean Portal (redirects to `/dean/login`).
+   - Navigate to `/employee/login` and sign in with `employee` / `emp123`.
+   - Notice the distinct teal theme, the `EMPLOYEE PORTAL` badge, and read-only access:
+     - Active Dataset Info Bar has no "Replace" button.
+     - Table Action column shows only a **View** button (no Edit or Delete buttons).
+     - Full searching, dynamic filtering, detail inspection modal, and CSV export remain fully functional.
 
 ---
 
-## 9. Future Enhancements & Possible Improvements
+## 8. Running Automated Tests
 
-- **Spring Security 6 JWT:** Transition from lightweight HMAC tokens to full Spring Security 6 with asymmetric RSA key pairs and refresh token rotation.
-- **Excel & PDF Export:** Add Apache POI / iText to export report summaries in `.xlsx` and `.pdf` formats.
-- **Bean Validation:** Add Hibernate Validator (`@NotNull`, `@Min`, `@Max`, `@Pattern`) on entity fields and request DTOs.
-- **CI/CD Pipeline:** Add GitHub Actions workflow for automated `mvn test` and `npm run build` on push.
+To run the backend integration test suite covering Dean & Employee authentication, access code validation, duplicate checks, atomic dataset replacement, and role-based permissions:
+
+```bash
+cd backend
+mvn test
+```
+All 12 integration tests will execute against an in-memory H2 database with 100% pass rate.

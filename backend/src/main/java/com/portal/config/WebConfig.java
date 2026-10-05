@@ -6,7 +6,7 @@ import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
- * WebMvc configuration that registers the AuthInterceptor for protected employee endpoints.
+ * WebMvc configuration that registers AuthInterceptor for protected dataset and employee endpoints.
  */
 @Configuration
 public class WebConfig implements WebMvcConfigurer {
@@ -16,8 +16,8 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // Enforce token validation and role checks on all /api/employees endpoints
+        // Enforce token validation and role checks on all /api/dataset and /api/employees endpoints
         registry.addInterceptor(authInterceptor)
-                .addPathPatterns("/api/employees/**");
+                .addPathPatterns("/api/dataset/**", "/api/employees/**");
     }
 }

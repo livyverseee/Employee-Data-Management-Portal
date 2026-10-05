@@ -2,8 +2,12 @@ package com.portal.model;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -13,12 +17,20 @@ import lombok.Setter;
  * JPA Entity representing an employee in the system.
  * Table name: "employees"
  * 
- * Note: Uses @Getter, @Setter, @NoArgsConstructor, and @AllArgsConstructor 
- * instead of @Data to prevent JPA equals/hashCode issues with entity proxies.
- * Because employeeId is the @Id, saveAll() updates existing records on re-upload.
+ * Auto-generated Long primary key 'id'.
+ * Scoped to an active dataset via 'datasetId' (indexed).
+ * Unique constraint on (datasetId, employeeId).
  */
 @Entity
-@Table(name = "employees")
+@Table(
+    name = "employees",
+    uniqueConstraints = {
+        @UniqueConstraint(name = "uk_dataset_employee", columnNames = {"dataset_id", "employee_id"})
+    },
+    indexes = {
+        @Index(name = "idx_dataset_id", columnList = "dataset_id")
+    }
+)
 @Getter
 @Setter
 @NoArgsConstructor
@@ -26,6 +38,12 @@ import lombok.Setter;
 public class Employee {
 
     @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "dataset_id", nullable = false)
+    private Long datasetId;
+
     @Column(name = "employee_id", nullable = false, length = 50)
     private String employeeId;
 

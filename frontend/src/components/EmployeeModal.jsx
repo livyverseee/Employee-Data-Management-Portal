@@ -7,7 +7,7 @@ import { getEmployeeByIdApi } from '../services/api';
  * - Displays all employee fields with friendly labels.
  * - Supports closing via X button, Close button, backdrop click, or Escape key.
  */
-export default function EmployeeModal({ employeeId, onClose }) {
+export default function EmployeeModal({ id, onClose }) {
   const [employee, setEmployee] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -23,15 +23,15 @@ export default function EmployeeModal({ employeeId, onClose }) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
-  // Fetch full employee details by ID
+  // Fetch full employee details by database ID
   useEffect(() => {
-    if (!employeeId) return;
+    if (!id) return;
 
     let isMounted = true;
     setLoading(true);
     setError(null);
 
-    getEmployeeByIdApi(employeeId)
+    getEmployeeByIdApi(id)
       .then((res) => {
         if (isMounted) {
           setEmployee(res.data);
@@ -49,9 +49,9 @@ export default function EmployeeModal({ employeeId, onClose }) {
     return () => {
       isMounted = false;
     };
-  }, [employeeId]);
+  }, [id]);
 
-  // Backdrop click handler (closes modal when clicking outside dialog content)
+  // Backdrop click handler
   const handleBackdropClick = (e) => {
     if (e.target === e.currentTarget) {
       onClose();
@@ -62,7 +62,9 @@ export default function EmployeeModal({ employeeId, onClose }) {
     <div className="modal-backdrop" onClick={handleBackdropClick}>
       <div className="modal-content" role="dialog" aria-modal="true">
         <div className="modal-header">
-          <h3>Employee Details &mdash; {employeeId}</h3>
+          <h3>
+            Employee Details {employee ? `— ${employee.employeeId}` : ''}
+          </h3>
           <button
             type="button"
             className="modal-close-btn"
@@ -137,7 +139,7 @@ export default function EmployeeModal({ employeeId, onClose }) {
                 <div className="modal-field-label">Employment Status</div>
                 <div className="modal-field-value">
                   <span className={`badge ${employee.leaveOrNot === 1 ? 'badge-left' : 'badge-active'}`}>
-                    Left company: {employee.leaveOrNot === 1 ? 'Yes' : 'No'}
+                    {employee.leaveOrNot === 1 ? 'Left Company' : 'Active (Still Working)'}
                   </span>
                 </div>
               </div>

@@ -3,43 +3,82 @@
 ### ====================================================
 @baseUrl = http://localhost:8080/api
 
-### 1. Login as DEAN
+### 1. Dean Portal Login (Valid Credentials)
 # @name deanLogin
-POST {{baseUrl}}/auth/login
+POST {{baseUrl}}/auth/dean/login
 Content-Type: application/json
 
 {
-  "username": "dean",
+  "identifier": "dean",
   "password": "dean123"
 }
 
 ### Save Dean token
 @deanToken = {{deanLogin.response.body.token}}
 
-### 2. Login as EMPLOYEE
+### 2. Employee Portal Login (Valid Credentials)
 # @name employeeLogin
-POST {{baseUrl}}/auth/login
+POST {{baseUrl}}/auth/employee/login
 Content-Type: application/json
 
 {
-  "username": "employee",
+  "identifier": "employee",
   "password": "emp123"
 }
 
 ### Save Employee token
 @employeeToken = {{employeeLogin.response.body.token}}
 
-### 3. Login Failure - Invalid Password (Expect 401 Unauthorized)
-POST {{baseUrl}}/auth/login
+### 3. Portal Mismatch: Dean tries to log into Employee Portal (Expect 401 Unauthorized)
+POST {{baseUrl}}/auth/employee/login
 Content-Type: application/json
 
 {
-  "username": "dean",
-  "password": "wrongpassword"
+  "identifier": "dean",
+  "password": "dean123"
 }
 
-### 4. DEAN Uploads XML Dataset (Expect 200 OK with recordsSaved)
-POST {{baseUrl}}/employees/upload
+### 4. Dean Registration - Invalid Access Code (Expect 403 Forbidden)
+POST {{baseUrl}}/auth/dean/register
+Content-Type: application/json
+
+{
+  "fullName": "Associate Dean",
+  "username": "assoc_dean",
+  "email": "assoc_dean@portal.com",
+  "password": "password123",
+  "accessCode": "WRONG_CODE"
+}
+
+### 5. Dean Registration - Valid Access Code (Expect 201 Created)
+POST {{baseUrl}}/auth/dean/register
+Content-Type: application/json
+
+{
+  "fullName": "Vice Dean",
+  "username": "vicedean",
+  "email": "vicedean@portal.com",
+  "password": "password123",
+  "accessCode": "DEAN2026"
+}
+
+### 6. Employee Registration (Expect 201 Created)
+POST {{baseUrl}}/auth/employee/register
+Content-Type: application/json
+
+{
+  "fullName": "Alice Smith",
+  "username": "alicesmith",
+  "email": "alice@portal.com",
+  "password": "password123"
+}
+
+### 7. Check Active Dataset Status (Public or Protected)
+GET {{baseUrl}}/dataset/active
+Authorization: Bearer {{employeeToken}}
+
+### 8. DEAN Uploads Initial XML Dataset (Expect 200 OK)
+POST {{baseUrl}}/dataset/upload
 Authorization: Bearer {{deanToken}}
 Content-Type: multipart/form-data; boundary=WebAppBoundary
 
@@ -72,11 +111,35 @@ Content-Type: application/xml
     <experienceInCurrentDomain>3</experienceInCurrentDomain>
     <leaveOrNot>1</leaveOrNot>
   </employee>
+  <employee>
+    <employeeId>EMP0003</employeeId>
+    <education>Masters</education>
+    <joiningYear>2014</joiningYear>
+    <city>New Delhi</city>
+    <paymentTier>2</paymentTier>
+    <age>30</age>
+    <gender>Female</gender>
+    <everBenched>Yes</everBenched>
+    <experienceInCurrentDomain>2</experienceInCurrentDomain>
+    <leaveOrNot>0</leaveOrNot>
+  </employee>
 </employees>
 --WebAppBoundary--
 
-### 5. EMPLOYEE tries to Upload XML (Expect 403 Forbidden - Role Check)
-POST {{baseUrl}}/employees/upload
+### 9. DEAN Attempts Duplicate Initial Upload when Dataset is already active (Expect 409 Conflict)
+POST {{baseUrl}}/dataset/upload
+Authorization: Bearer {{deanToken}}
+Content-Type: multipart/form-data; boundary=WebAppBoundary
+
+--WebAppBoundary
+Content-Disposition: form-data; name="file"; filename="sample.xml"
+Content-Type: application/xml
+
+<employees></employees>
+--WebAppBoundary--
+
+### 10. EMPLOYEE tries to Upload Dataset (Expect 403 Forbidden - Role Check)
+POST {{baseUrl}}/dataset/upload
 Authorization: Bearer {{employeeToken}}
 Content-Type: multipart/form-data; boundary=WebAppBoundary
 
@@ -87,41 +150,107 @@ Content-Type: application/xml
 <employees></employees>
 --WebAppBoundary--
 
-### 6. Missing Authorization Token on Protected Endpoint (Expect 401 Unauthorized)
-GET {{baseUrl}}/employees
+### 11. DEAN Replaces Dataset (Atomic Replacement, Expect 200 OK)
+POST {{baseUrl}}/dataset/replace
+Authorization: Bearer {{deanToken}}
+Content-Type: multipart/form-data; boundary=WebAppBoundary
 
-### 7. Search and Pagination - Get First 10 Employees
+--WebAppBoundary
+Content-Disposition: form-data; name="file"; filename="replaced-employees.xml"
+Content-Type: application/xml
+
+<employees>
+  <employee>
+    <employeeId>EMP0101</employeeId>
+    <education>Bachelors</education>
+    <joiningYear>2018</joiningYear>
+    <city>Bangalore</city>
+    <paymentTier>3</paymentTier>
+    <age>26</age>
+    <gender>Male</gender>
+    <everBenched>No</everBenched>
+    <experienceInCurrentDomain>4</experienceInCurrentDomain>
+    <leaveOrNot>0</leaveOrNot>
+  </employee>
+  <employee>
+    <employeeId>EMP0102</employeeId>
+    <education>Masters</education>
+    <joiningYear>2015</joiningYear>
+    <city>Pune</city>
+    <paymentTier>2</paymentTier>
+    <age>32</age>
+    <gender>Female</gender>
+    <everBenched>Yes</everBenched>
+    <experienceInCurrentDomain>5</experienceInCurrentDomain>
+    <leaveOrNot>1</leaveOrNot>
+  </employee>
+</employees>
+--WebAppBoundary--
+
+### 12. Fetch Dynamic Filter Options (Expect distinct cities, educations, genders, tiers)
+GET {{baseUrl}}/employees/filter-options
+Authorization: Bearer {{employeeToken}}
+
+### 13. Search and Pagination - Scoped to Active Dataset
 GET {{baseUrl}}/employees?page=0&size=10
 Authorization: Bearer {{employeeToken}}
 
-### 8. Search and Filter - By City (Bangalore)
-GET {{baseUrl}}/employees?city=Bangalore&page=0&size=10
+### 14. Column Filters - Search by City and Age Range
+GET {{baseUrl}}/employees?city=Bangalore&ageMin=20&ageMax=30&page=0&size=10
 Authorization: Bearer {{employeeToken}}
 
-### 9. Search and Filter - By Gender (Female)
-GET {{baseUrl}}/employees?gender=Female&page=0&size=10
-Authorization: Bearer {{employeeToken}}
-
-### 10. Search Text (Free text search in ID, city, or education)
+### 15. Global Search Text (Searches employeeId, city, education)
 GET {{baseUrl}}/employees?search=Pune&page=0&size=10
+Authorization: Bearer {{employeeToken}}
+
+### 16. Get Single Employee by Database ID (Assume ID 1 exists)
+GET {{baseUrl}}/employees/1
+Authorization: Bearer {{employeeToken}}
+
+### 17. DEAN Updates Employee (Expect 200 OK with updated employee)
+PUT {{baseUrl}}/employees/1
+Authorization: Bearer {{deanToken}}
+Content-Type: application/json
+
+{
+  "employeeId": "EMP0101-UPDATED",
+  "education": "Masters",
+  "joiningYear": 2019,
+  "city": "Bangalore",
+  "paymentTier": 1,
+  "age": 27,
+  "gender": "Male",
+  "everBenched": "Yes",
+  "experienceInCurrentDomain": 5,
+  "leaveOrNot": 0
+}
+
+### 18. EMPLOYEE tries to Update Employee (Expect 403 Forbidden)
+PUT {{baseUrl}}/employees/1
+Authorization: Bearer {{employeeToken}}
+Content-Type: application/json
+
+{
+  "employeeId": "EMP0101-HACK",
+  "education": "PHD",
+  "joiningYear": 2020,
+  "city": "Pune",
+  "paymentTier": 1,
+  "age": 30,
+  "gender": "Male",
+  "everBenched": "No",
+  "experienceInCurrentDomain": 6,
+  "leaveOrNot": 0
+}
+
+### 19. EMPLOYEE tries to Delete Employee (Expect 403 Forbidden)
+DELETE {{baseUrl}}/employees/1
+Authorization: Bearer {{employeeToken}}
+
+### 20. DEAN Deletes Employee by ID (Expect 204 No Content)
+DELETE {{baseUrl}}/employees/1
 Authorization: Bearer {{deanToken}}
 
-### 11. Get Single Employee by ID (Expect 200 OK)
-GET {{baseUrl}}/employees/EMP0001
-Authorization: Bearer {{employeeToken}}
-
-### 12. Get Non-Existent Employee by ID (Expect 404 Not Found)
-GET {{baseUrl}}/employees/EMP999999
-Authorization: Bearer {{employeeToken}}
-
-### 13. EMPLOYEE tries to Delete an Employee (Expect 403 Forbidden - Role Check)
-DELETE {{baseUrl}}/employees/EMP0001
-Authorization: Bearer {{employeeToken}}
-
-### 14. DEAN Deletes an Employee (Expect 204 No Content)
-DELETE {{baseUrl}}/employees/EMP0002
-Authorization: Bearer {{deanToken}}
-
-### 15. Export CSV with Current Filters (Expect 200 OK with text/csv attachment)
-GET {{baseUrl}}/employees/export?city=Bangalore
+### 21. Export CSV with Active Filters (Expect 200 OK with text/csv attachment)
+GET {{baseUrl}}/employees/export?city=Pune
 Authorization: Bearer {{employeeToken}}

@@ -15,16 +15,18 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 
 /**
- * Spring MVC HandlerInterceptor that intercepts all /api/employees/** requests.
+ * Spring MVC HandlerInterceptor that intercepts protected endpoints under /api/dataset/** and /api/employees/**.
  * 
- * Flow:
- * 1. Allows HTTP OPTIONS requests (CORS preflight).
- * 2. Extracts and validates the lightweight token from Authorization header.
+ * Rules:
+ * 1. Skips preflight OPTIONS requests.
+ * 2. Validates Bearer token presence and HMAC cryptographic integrity.
  * 3. Enforces Role-Based Access Control (RBAC):
- *    - POST /api/employees/upload -> DEAN only (403 if EMPLOYEE).
- *    - DELETE /api/employees/*    -> DEAN only (403 if EMPLOYEE).
- *    - GET /api/employees/**      -> DEAN and EMPLOYEE allowed.
- * 4. Returns structured JSON error responses on 401 / 403.
+ *    - POST /api/dataset/upload  -> DEAN only
+ *    - POST /api/dataset/replace -> DEAN only
+ *    - PUT /api/employees/**     -> DEAN only
+ *    - DELETE /api/employees/**  -> DEAN only
+ *    - GET /api/dataset/active   -> DEAN and EMPLOYEE allowed
+ *    - GET /api/employees/**     -> DEAN and EMPLOYEE allowed
  */
 @Component
 public class AuthInterceptor implements HandlerInterceptor {
@@ -41,7 +43,7 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
-        // 1. Let CORS preflight requests through without checking token
+        // 1. Allow CORS preflight requests
         if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
             return true;
         }
@@ -57,7 +59,7 @@ public class AuthInterceptor implements HandlerInterceptor {
             }
         }
 
-        // 3. Validate token presence & cryptographic integrity
+        // 3. Validate token presence & integrity
         if (token == null || !tokenService.validateToken(token)) {
             writeErrorResponse(response, HttpStatus.UNAUTHORIZED, "Missing or invalid authorization token");
             return false;
@@ -72,20 +74,22 @@ public class AuthInterceptor implements HandlerInterceptor {
         String uri = request.getRequestURI();
         String method = request.getMethod();
 
-        // 5. Role checks:
+        // 5. Role restrictions:
         // DEAN-only operations:
-        // - POST /api/employees/upload
-        // - DELETE /api/employees/{id}
-        boolean isUpload = "POST".equalsIgnoreCase(method) && uri.endsWith("/upload");
-        boolean isDelete = "DELETE".equalsIgnoreCase(method);
+        // - POST /api/dataset/upload
+        // - POST /api/dataset/replace
+        // - PUT /api/employees/**
+        // - DELETE /api/employees/**
+        boolean isDatasetMutation = uri.startsWith("/api/dataset/upload") || uri.startsWith("/api/dataset/replace");
+        boolean isEmployeeMutation = ("PUT".equalsIgnoreCase(method) || "DELETE".equalsIgnoreCase(method)) && uri.startsWith("/api/employees");
 
-        if (isUpload || isDelete) {
+        if (isDatasetMutation || isEmployeeMutation) {
             if (!"DEAN".equalsIgnoreCase(role)) {
                 writeErrorResponse(response, HttpStatus.FORBIDDEN, "You don't have permission");
                 return false;
             }
         } else {
-            // General employee endpoints (GET list, GET by id, GET export) allow DEAN and EMPLOYEE
+            // General read endpoints allow both DEAN and EMPLOYEE
             if (!"DEAN".equalsIgnoreCase(role) && !"EMPLOYEE".equalsIgnoreCase(role)) {
                 writeErrorResponse(response, HttpStatus.FORBIDDEN, "You don't have permission");
                 return false;
@@ -95,9 +99,6 @@ public class AuthInterceptor implements HandlerInterceptor {
         return true;
     }
 
-    /**
-     * Helper to write consistent JSON error responses directly to the HttpServletResponse.
-     */
     private void writeErrorResponse(HttpServletResponse response, HttpStatus status, String message) throws IOException {
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
