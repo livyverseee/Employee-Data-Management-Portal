@@ -12,6 +12,17 @@ import com.portal.model.Employee;
 import com.portal.repository.DatasetRepository;
 import com.portal.repository.EmployeeRepository;
 import com.portal.repository.EmployeeSpecifications;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.CellType;
+import org.apache.poi.ss.usermodel.FillPatternType;
+import org.apache.poi.ss.usermodel.Font;
+import org.apache.poi.ss.usermodel.HorizontalAlignment;
+import org.apache.poi.ss.usermodel.IndexedColors;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.util.CellRangeAddress;
+import org.apache.poi.xssf.streaming.SXSSFSheet;
+import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -22,8 +33,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
-import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 import java.time.Year;
 import java.util.ArrayList;
 import java.util.List;
@@ -158,13 +171,122 @@ public class EmployeeService {
     }
 
     /**
-     * Streams all employees matching current filter criteria as a CSV attachment.
+     * Generates a streaming Excel (.xlsx) workbook using Apache POI SXSSFWorkbook.
+     * Features:
+     * - Sheet name "Employees"
+     * - Styled, frozen header row with background color and bold text
+     * - Auto-filter enabled on headers
+     * - Sensible column widths
+     * - Numeric cells for numeric columns (Joining Year, Payment Tier, Age, Experience)
+     * - Status as "Active" or "Left"
      */
     @Transactional(readOnly = true)
-    public void exportEmployeesCsv(EmployeeCriteria criteria, Writer writer) throws IOException {
-        PrintWriter printWriter = new PrintWriter(writer);
-        // Header row
-        printWriter.println("Employee ID,Education,Joining Year,City,Payment Tier,Age,Gender,Ever Benched,Experience In Current Domain,Left Company");
+    public void exportEmployeesExcel(EmployeeCriteria criteria, OutputStream outputStream) throws IOException {
+        Optional<Dataset> activeDatasetOpt = datasetRepository.findByActiveTrue();
+        List<Employee> employees = new ArrayList<>();
+        if (activeDatasetOpt.isPresent()) {
+            Long datasetId = activeDatasetOpt.get().getId();
+            Specification<Employee> spec = EmployeeSpecifications.filterEmployees(datasetId, criteria);
+            employees = employeeRepository.findAll(spec, Sort.by(Sort.Direction.ASC, "employeeId"));
+        }
+
+        // SXSSFWorkbook with sliding window of 100 rows in memory to handle large exports with low memory footprint
+        try (SXSSFWorkbook workbook = new SXSSFWorkbook(100)) {
+            SXSSFSheet sheet = workbook.createSheet("Employees");
+
+            // Header styling: bold white font with background fill
+            Font headerFont = workbook.createFont();
+            headerFont.setBold(true);
+            headerFont.setColor(IndexedColors.WHITE.getIndex());
+            headerFont.setFontHeightInPoints((short) 11);
+
+            CellStyle headerStyle = workbook.createCellStyle();
+            headerStyle.setFont(headerFont);
+            headerStyle.setFillForegroundColor(IndexedColors.ROYAL_BLUE.getIndex());
+            headerStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+            headerStyle.setAlignment(HorizontalAlignment.CENTER);
+
+            // Freeze the header row (1st row)
+            sheet.createFreezePane(0, 1);
+
+            // Define exact columns matching requirements
+            String[] headers = {
+                    "Employee ID", "Education", "Joining Year", "City", "Payment Tier",
+                    "Age", "Gender", "Ever Benched", "Experience (yrs)", "Status"
+            };
+
+            Row headerRow = sheet.createRow(0);
+            for (int i = 0; i < headers.length; i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(headers[i]);
+                cell.setCellStyle(headerStyle);
+            }
+
+            // Enable auto-filter across the header columns
+            sheet.setAutoFilter(new CellRangeAddress(0, 0, 0, headers.length - 1));
+
+            // Populate data rows
+            int rowIdx = 1;
+            for (Employee emp : employees) {
+                Row row = sheet.createRow(rowIdx++);
+
+                // 0: Employee ID (String)
+                row.createCell(0).setCellValue(emp.getEmployeeId() != null ? emp.getEmployeeId() : "");
+
+                // 1: Education (String)
+                row.createCell(1).setCellValue(emp.getEducation() != null ? emp.getEducation() : "");
+
+                // 2: Joining Year (Numeric)
+                row.createCell(2, CellType.NUMERIC).setCellValue(emp.getJoiningYear());
+
+                // 3: City (String)
+                row.createCell(3).setCellValue(emp.getCity() != null ? emp.getCity() : "");
+
+                // 4: Payment Tier (Numeric)
+                row.createCell(4, CellType.NUMERIC).setCellValue(emp.getPaymentTier());
+
+                // 5: Age (Numeric)
+                row.createCell(5, CellType.NUMERIC).setCellValue(emp.getAge());
+
+                // 6: Gender (String)
+                row.createCell(6).setCellValue(emp.getGender() != null ? emp.getGender() : "");
+
+                // 7: Ever Benched (String)
+                row.createCell(7).setCellValue(emp.getEverBenched() != null ? emp.getEverBenched() : "");
+
+                // 8: Experience (yrs) (Numeric)
+                row.createCell(8, CellType.NUMERIC).setCellValue(emp.getExperienceInCurrentDomain());
+
+                // 9: Status (String: "Active" or "Left")
+                String status = (emp.getLeaveOrNot() == 1) ? "Left" : "Active";
+                row.createCell(9).setCellValue(status);
+            }
+
+            // Set sensible column widths (in 1/256th character units)
+            int[] colWidths = { 4600, 3800, 3600, 4200, 3600, 2600, 3000, 3600, 4400, 3200 };
+            for (int i = 0; i < colWidths.length; i++) {
+                sheet.setColumnWidth(i, colWidths[i]);
+            }
+
+            workbook.write(outputStream);
+            workbook.dispose(); // clean up temporary files created by SXSSFWorkbook
+        }
+    }
+
+    /**
+     * Streams all employees matching current filter criteria as a CSV attachment.
+     * Writes UTF-8 BOM so Excel opens the CSV correctly, and uses identical headers.
+     */
+    @Transactional(readOnly = true)
+    public void exportEmployeesCsv(EmployeeCriteria criteria, OutputStream outputStream) throws IOException {
+        // Write UTF-8 Byte Order Mark (BOM) for Excel compatibility
+        outputStream.write(0xEF);
+        outputStream.write(0xBB);
+        outputStream.write(0xBF);
+
+        PrintWriter printWriter = new PrintWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
+        // Header row matching Excel export
+        printWriter.println("Employee ID,Education,Joining Year,City,Payment Tier,Age,Gender,Ever Benched,Experience (yrs),Status");
 
         Optional<Dataset> activeDatasetOpt = datasetRepository.findByActiveTrue();
         if (activeDatasetOpt.isEmpty()) {
@@ -177,7 +299,7 @@ public class EmployeeService {
         List<Employee> employees = employeeRepository.findAll(spec, Sort.by(Sort.Direction.ASC, "employeeId"));
 
         for (Employee emp : employees) {
-            String leftCompany = emp.getLeaveOrNot() == 1 ? "Yes" : "No";
+            String status = (emp.getLeaveOrNot() == 1) ? "Left" : "Active";
 
             StringBuilder row = new StringBuilder();
             row.append(escapeCsv(emp.getEmployeeId())).append(",");
@@ -189,7 +311,7 @@ public class EmployeeService {
             row.append(escapeCsv(emp.getGender())).append(",");
             row.append(escapeCsv(emp.getEverBenched())).append(",");
             row.append(emp.getExperienceInCurrentDomain()).append(",");
-            row.append(escapeCsv(leftCompany));
+            row.append(escapeCsv(status));
 
             printWriter.println(row.toString());
         }

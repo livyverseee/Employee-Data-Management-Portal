@@ -115,6 +115,13 @@ export const deleteEmployeeApi = (id) => {
   return api.delete(`/employees/${encodeURIComponent(id)}`);
 };
 
+export const exportExcelApi = (params) => {
+  return api.get('/employees/export/excel', {
+    params,
+    responseType: 'blob', // Required for binary file download
+  });
+};
+
 export const exportCsvApi = (params) => {
   return api.get('/employees/export', {
     params,

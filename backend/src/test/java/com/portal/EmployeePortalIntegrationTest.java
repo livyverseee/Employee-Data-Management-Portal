@@ -21,6 +21,14 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellType;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+
+import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -274,14 +282,39 @@ public class EmployeePortalIntegrationTest {
         MockMultipartFile file = new MockMultipartFile("file", "sample-employees.xml", "application/xml", content);
         datasetService.replaceDataset(file, "dean");
 
-        // 1. Filter options check
-        mockMvc.perform(get("/api/employees/filter-options")
+        // 1. Filter options check - verify every dropdown list is non-empty and sorted
+        MvcResult filterResult = mockMvc.perform(get("/api/employees/filter-options")
                         .header("Authorization", "Bearer " + employeeToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.city", hasItems("Bangalore", "Pune", "New Delhi")))
-                .andExpect(jsonPath("$.education", hasItem("Bachelors")))
+                .andExpect(jsonPath("$.education", not(empty())))
+                .andExpect(jsonPath("$.joiningYear", not(empty())))
+                .andExpect(jsonPath("$.city", not(empty())))
+                .andExpect(jsonPath("$.paymentTier", not(empty())))
+                .andExpect(jsonPath("$.gender", not(empty())))
+                .andExpect(jsonPath("$.everBenched", not(empty())))
+                .andExpect(jsonPath("$.experienceInCurrentDomain", not(empty())))
+                .andExpect(jsonPath("$.leaveOrNot", not(empty())))
                 .andExpect(jsonPath("$.minAge").isNumber())
-                .andExpect(jsonPath("$.maxAge").isNumber());
+                .andExpect(jsonPath("$.maxAge").isNumber())
+                .andReturn();
+
+        // Verify lists are sorted ascending
+        com.portal.dto.FilterOptionsResponse options = objectMapper.readValue(
+                filterResult.getResponse().getContentAsString(),
+                com.portal.dto.FilterOptionsResponse.class
+        );
+        for (int i = 0; i < options.getEducation().size() - 1; i++) {
+            assertTrue(options.getEducation().get(i).compareTo(options.getEducation().get(i + 1)) <= 0);
+        }
+        for (int i = 0; i < options.getCity().size() - 1; i++) {
+            assertTrue(options.getCity().get(i).compareTo(options.getCity().get(i + 1)) <= 0);
+        }
+        for (int i = 0; i < options.getJoiningYear().size() - 1; i++) {
+            assertTrue(options.getJoiningYear().get(i) <= options.getJoiningYear().get(i + 1));
+        }
+        for (int i = 0; i < options.getPaymentTier().size() - 1; i++) {
+            assertTrue(options.getPaymentTier().get(i) <= options.getPaymentTier().get(i + 1));
+        }
 
         // 2. City column filter (Pune)
         mockMvc.perform(get("/api/employees?city=Pune")
@@ -436,5 +469,117 @@ public class EmployeePortalIntegrationTest {
                         .header("Authorization", "Bearer " + deanToken))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.status").value(404));
+    }
+
+    // ====================================================
+    // EXCEL AND CSV EXPORT TESTS
+    // ====================================================
+
+    @Test
+    @DisplayName("GET /api/employees/export/excel - Generates valid streaming .xlsx with Apache POI, numeric cells, and filter support")
+    void testExportExcelWithApachePoi() throws Exception {
+        // Upload sample dataset with 15 records
+        Path xmlPath = Paths.get("../sample-data/sample-employees.xml");
+        byte[] content = Files.readAllBytes(xmlPath);
+        MockMultipartFile file = new MockMultipartFile("file", "sample-employees.xml", "application/xml", content);
+        datasetService.replaceDataset(file, "dean");
+
+        // 1. Export all employees as EMPLOYEE role
+        MvcResult mvcResult = mockMvc.perform(get("/api/employees/export/excel")
+                        .header("Authorization", "Bearer " + employeeToken))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .andExpect(header().string("Content-Disposition", "attachment; filename=\"employees.xlsx\""))
+                .andReturn();
+
+        byte[] excelBytes = mvcResult.getResponse().getContentAsByteArray();
+        assertTrue(excelBytes.length > 0);
+
+        // Read bytes back with Apache POI XSSFWorkbook and verify structure
+        try (Workbook workbook = new XSSFWorkbook(new ByteArrayInputStream(excelBytes))) {
+            Sheet sheet = workbook.getSheet("Employees");
+            assertNotNull(sheet, "Sheet 'Employees' must exist in workbook");
+
+            // 1 header row + 15 data rows = 16 rows total
+            assertEquals(16, sheet.getPhysicalNumberOfRows(), "Must contain 1 header row + 15 employee data rows");
+
+            // Verify header row
+            Row headerRow = sheet.getRow(0);
+            assertNotNull(headerRow);
+            String[] expectedHeaders = {
+                    "Employee ID", "Education", "Joining Year", "City", "Payment Tier",
+                    "Age", "Gender", "Ever Benched", "Experience (yrs)", "Status"
+            };
+            for (int i = 0; i < expectedHeaders.length; i++) {
+                assertEquals(expectedHeaders[i], headerRow.getCell(i).getStringCellValue());
+            }
+
+            // Verify numeric data cells in first data row
+            Row firstDataRow = sheet.getRow(1);
+            assertNotNull(firstDataRow);
+            assertFalse(firstDataRow.getCell(0).getStringCellValue().isEmpty()); // Employee ID
+            assertFalse(firstDataRow.getCell(1).getStringCellValue().isEmpty()); // Education
+            assertEquals(CellType.NUMERIC, firstDataRow.getCell(2).getCellType(), "Joining Year must be numeric");
+            assertFalse(firstDataRow.getCell(3).getStringCellValue().isEmpty()); // City
+            assertEquals(CellType.NUMERIC, firstDataRow.getCell(4).getCellType(), "Payment Tier must be numeric");
+            assertEquals(CellType.NUMERIC, firstDataRow.getCell(5).getCellType(), "Age must be numeric");
+            assertFalse(firstDataRow.getCell(6).getStringCellValue().isEmpty()); // Gender
+            assertFalse(firstDataRow.getCell(7).getStringCellValue().isEmpty()); // Ever Benched
+            assertEquals(CellType.NUMERIC, firstDataRow.getCell(8).getCellType(), "Experience must be numeric");
+            String status = firstDataRow.getCell(9).getStringCellValue();
+            assertTrue("Active".equals(status) || "Left".equals(status), "Status must be 'Active' or 'Left'");
+        }
+
+        // 2. Export with filter (city=Pune)
+        MvcResult filteredResult = mockMvc.perform(get("/api/employees/export/excel?city=Pune")
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        try (Workbook filteredWb = new XSSFWorkbook(new ByteArrayInputStream(filteredResult.getResponse().getContentAsByteArray()))) {
+            Sheet filteredSheet = filteredWb.getSheet("Employees");
+            assertNotNull(filteredSheet);
+            int rows = filteredSheet.getPhysicalNumberOfRows();
+            assertTrue(rows > 1, "Must contain at least header + 1 Pune employee");
+
+            // Check every data row has City = Pune
+            for (int r = 1; r < rows; r++) {
+                Row row = filteredSheet.getRow(r);
+                assertEquals("Pune", row.getCell(3).getStringCellValue());
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("Export Security and CSV - 401 without token, valid CSV with UTF-8 BOM")
+    void testExportSecurityAndCsv() throws Exception {
+        ensureActiveDatasetUploaded();
+
+        // 1. Missing token on Excel export -> 401 Unauthorized
+        mockMvc.perform(get("/api/employees/export/excel"))
+                .andExpect(status().isUnauthorized());
+
+        // 2. Missing token on CSV export -> 401 Unauthorized
+        mockMvc.perform(get("/api/employees/export"))
+                .andExpect(status().isUnauthorized());
+
+        // 3. Valid CSV export with EMPLOYEE token
+        MvcResult csvResult = mockMvc.perform(get("/api/employees/export")
+                        .header("Authorization", "Bearer " + employeeToken))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", startsWith("text/csv")))
+                .andExpect(header().string("Content-Disposition", "attachment; filename=\"employees.csv\""))
+                .andReturn();
+
+        byte[] csvBytes = csvResult.getResponse().getContentAsByteArray();
+        assertTrue(csvBytes.length >= 3);
+
+        // Verify UTF-8 BOM
+        assertEquals((byte) 0xEF, csvBytes[0]);
+        assertEquals((byte) 0xBB, csvBytes[1]);
+        assertEquals((byte) 0xBF, csvBytes[2]);
+
+        String csvText = new String(csvBytes, 3, csvBytes.length - 3, java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(csvText.startsWith("Employee ID,Education,Joining Year,City,Payment Tier,Age,Gender,Ever Benched,Experience (yrs),Status"));
     }
 }

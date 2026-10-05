@@ -906,7 +906,7 @@ input:focus, select:focus {
   font-size: 0.775rem;
   padding: 5px 6px;
   height: 30px;
-  min-width: 105px;
+  min-width: 95px;
 }
 
 .age-filter-inputs {
@@ -917,15 +917,35 @@ input:focus, select:focus {
 
 .filter-input-small {
   font-size: 0.775rem;
-  padding: 5px 6px;
+  padding: 5px 4px;
   height: 30px;
-  width: 52px;
+  width: 64px;
   text-align: center;
+  -moz-appearance: textfield;
+}
+
+.filter-input-small::-webkit-outer-spin-button,
+.filter-input-small::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .age-sep {
   color: var(--text-muted);
   font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.filter-error-row th {
+  background-color: #fef2f2 !important;
+  border-bottom: 1px solid #fecaca !important;
+  padding: 8px 16px !important;
+}
+
+.filter-error-banner {
+  color: #b91c1c;
+  font-size: 0.8rem;
+  font-weight: 500;
 }
 
 /* Table body */

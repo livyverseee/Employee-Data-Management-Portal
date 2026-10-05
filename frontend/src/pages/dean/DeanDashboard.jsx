@@ -14,6 +14,7 @@ import {
   getFilterOptionsApi,
   deleteEmployeeApi,
   exportCsvApi,
+  exportExcelApi,
 } from '../../services/api';
 
 /**
@@ -47,11 +48,13 @@ export default function DeanDashboard() {
     ageMax: '',
     gender: '',
     everBenched: '',
+    experienceInCurrentDomain: '',
     leaveOrNot: '',
   });
 
   // Dynamic filter options populated from backend
   const [filterOptions, setFilterOptions] = useState({});
+  const [filterOptionsError, setFilterOptionsError] = useState(null);
 
   // Modals & Popups
   const [showReplaceModal, setShowReplaceModal] = useState(false);
@@ -60,7 +63,8 @@ export default function DeanDashboard() {
 
   // Toast notification
   const [toast, setToast] = useState(null);
-  const [exporting, setExporting] = useState(false);
+  const [exportingExcel, setExportingExcel] = useState(false);
+  const [exportingCsv, setExportingCsv] = useState(false);
 
   // Fetch active dataset info
   const fetchDatasetInfo = useCallback(async () => {
@@ -79,10 +83,12 @@ export default function DeanDashboard() {
   // Fetch filter options (distinct values from active dataset)
   const fetchFilterOptions = useCallback(async () => {
     try {
+      setFilterOptionsError(null);
       const res = await getFilterOptionsApi();
       setFilterOptions(res.data || {});
-    } catch {
-      // Ignored if no active dataset exists yet
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Failed to load filter options';
+      setFilterOptionsError(msg);
     }
   }, []);
 
@@ -159,6 +165,7 @@ export default function DeanDashboard() {
       ageMax: '',
       gender: '',
       everBenched: '',
+      experienceInCurrentDomain: '',
       leaveOrNot: '',
     });
   };
@@ -214,9 +221,52 @@ export default function DeanDashboard() {
     }
   };
 
+  // Export filtered dataset to Excel (.xlsx)
+  const handleExportExcel = async () => {
+    if (totalElements === 0) {
+      setToast({ type: 'info', message: 'No records to export' });
+      return;
+    }
+
+    setExportingExcel(true);
+    const params = {};
+    Object.entries(filters).forEach(([k, v]) => {
+      if (v !== '' && v !== null && v !== undefined) {
+        params[k] = v;
+      }
+    });
+
+    try {
+      const response = await exportExcelApi(params);
+      const blob = new Blob([response.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'employees.xlsx';
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+      setToast({ type: 'success', message: 'Excel export downloaded successfully (employees.xlsx).' });
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Failed to export Excel file';
+      setToast({ type: 'error', message: msg });
+    } finally {
+      setExportingExcel(false);
+    }
+  };
+
   // Export filtered dataset to CSV
   const handleExportCsv = async () => {
-    setExporting(true);
+    if (totalElements === 0) {
+      setToast({ type: 'info', message: 'No records to export' });
+      return;
+    }
+
+    setExportingCsv(true);
     const params = {};
     Object.entries(filters).forEach(([k, v]) => {
       if (v !== '' && v !== null && v !== undefined) {
@@ -230,18 +280,18 @@ export default function DeanDashboard() {
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `employees_${dataset.fileName || 'export'}.csv`);
+      link.download = 'employees.csv';
       document.body.appendChild(link);
       link.click();
       link.parentNode.removeChild(link);
       window.URL.revokeObjectURL(url);
 
-      setToast({ type: 'success', message: 'CSV export downloaded successfully.' });
+      setToast({ type: 'success', message: 'CSV export downloaded successfully (employees.csv).' });
     } catch (err) {
-      const msg = err.response?.data?.message || 'Failed to export CSV';
+      const msg = err.response?.data?.message || 'Failed to export CSV file';
       setToast({ type: 'error', message: msg });
     } finally {
-      setExporting(false);
+      setExportingCsv(false);
     }
   };
 
@@ -307,12 +357,21 @@ export default function DeanDashboard() {
               <div className="toolbar-actions">
                 <button
                   type="button"
+                  className="btn btn-primary"
+                  onClick={handleExportExcel}
+                  disabled={exportingExcel || exportingCsv || totalElements === 0}
+                  title="Export filtered records as Excel (.xlsx)"
+                >
+                  {exportingExcel ? 'Exporting...' : '📊 Export Excel'}
+                </button>
+                <button
+                  type="button"
                   className="btn btn-outline"
                   onClick={handleExportCsv}
-                  disabled={exporting || totalElements === 0}
-                  title="Export filtered records to CSV"
+                  disabled={exportingExcel || exportingCsv || totalElements === 0}
+                  title="Export filtered records as CSV (.csv)"
                 >
-                  {exporting ? 'Generating CSV...' : '📥 Export CSV'}
+                  {exportingCsv ? 'Exporting...' : '📄 Export CSV'}
                 </button>
               </div>
             </div>
@@ -342,6 +401,7 @@ export default function DeanDashboard() {
                     onDelete={handleDeleteEmployee}
                     filters={filters}
                     filterOptions={filterOptions}
+                    filterOptionsError={filterOptionsError}
                     onFilterChange={handleFilterChange}
                     onClearFilters={handleClearFilters}
                   />

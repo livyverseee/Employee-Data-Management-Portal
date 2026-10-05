@@ -107,7 +107,39 @@ public class EmployeeController {
     }
 
     /**
-     * Export all employees matching active filters as a CSV attachment.
+     * Export all employees matching active filters as a streaming Excel (.xlsx) workbook.
+     */
+    @GetMapping("/export/excel")
+    public void exportExcel(
+            @RequestParam(value = "search", required = false) String search,
+            @RequestParam(value = "employeeId", required = false) String employeeId,
+            @RequestParam(value = "education", required = false) String education,
+            @RequestParam(value = "joiningYear", required = false) Integer joiningYear,
+            @RequestParam(value = "city", required = false) String city,
+            @RequestParam(value = "paymentTier", required = false) Integer paymentTier,
+            @RequestParam(value = "ageMin", required = false) Integer ageMin,
+            @RequestParam(value = "ageMax", required = false) Integer ageMax,
+            @RequestParam(value = "gender", required = false) String gender,
+            @RequestParam(value = "everBenched", required = false) String everBenched,
+            @RequestParam(value = "experienceInCurrentDomain", required = false) Integer experienceInCurrentDomain,
+            @RequestParam(value = "leaveOrNot", required = false) Integer leaveOrNot,
+            HttpServletResponse response) throws IOException {
+
+        EmployeeCriteria criteria = new EmployeeCriteria(
+                search, employeeId, education, joiningYear, city,
+                paymentTier, ageMin, ageMax, gender, everBenched,
+                experienceInCurrentDomain, leaveOrNot
+        );
+
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"employees.xlsx\"");
+
+        employeeService.exportEmployeesExcel(criteria, response.getOutputStream());
+        response.flushBuffer();
+    }
+
+    /**
+     * Export all employees matching active filters as a CSV attachment with UTF-8 BOM.
      */
     @GetMapping("/export")
     public void exportCsv(
@@ -134,6 +166,7 @@ public class EmployeeController {
         response.setContentType("text/csv; charset=UTF-8");
         response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"employees.csv\"");
 
-        employeeService.exportEmployeesCsv(criteria, response.getWriter());
+        employeeService.exportEmployeesCsv(criteria, response.getOutputStream());
+        response.flushBuffer();
     }
 }

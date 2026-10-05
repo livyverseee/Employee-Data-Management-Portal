@@ -3,7 +3,8 @@ import FilterRow from './FilterRow';
 
 /**
  * EmployeeTable displays the tabular employee data.
- * - Renders a per-column FilterRow directly beneath the column headers.
+ * - Columns: Employee ID, Education, Joining Year, City, Payment Tier, Age, Gender, Ever Benched, Experience (yrs), Status, Actions.
+ * - Renders per-column FilterRow directly beneath the column headers.
  * - Shows Edit and Delete buttons for DEAN (with stopPropagation).
  * - Shows read-only rows with detail modal trigger for EMPLOYEE.
  */
@@ -15,6 +16,7 @@ export default function EmployeeTable({
   onDelete,
   filters,
   filterOptions,
+  filterOptionsError = null,
   onFilterChange,
   onClearFilters,
 }) {
@@ -37,15 +39,15 @@ export default function EmployeeTable({
           <tr>
             <th>Employee ID</th>
             <th>Education</th>
+            <th>Joining Year</th>
             <th>City</th>
+            <th>Payment Tier</th>
             <th>Age</th>
             <th>Gender</th>
-            <th>Joining Year</th>
-            <th>Payment Tier</th>
+            <th>Ever Benched</th>
+            <th>Experience (yrs)</th>
             <th>Status</th>
-            <th style={{ minWidth: canEdit ? '140px' : '80px' }}>
-              {canEdit ? 'Actions' : 'Actions'}
-            </th>
+            <th style={{ minWidth: canEdit ? '140px' : '80px' }}>Actions</th>
           </tr>
 
           {/* Per-column filter row */}
@@ -53,6 +55,7 @@ export default function EmployeeTable({
             <FilterRow
               filters={filters}
               filterOptions={filterOptions}
+              filterOptionsError={filterOptionsError}
               onFilterChange={onFilterChange}
               onClearFilters={onClearFilters}
             />
@@ -62,7 +65,7 @@ export default function EmployeeTable({
         <tbody>
           {employees.length === 0 ? (
             <tr>
-              <td colSpan={9} className="empty-state-cell">
+              <td colSpan={11} className="empty-state-cell">
                 <div className="empty-state">
                   <p>No employee records match the selected criteria.</p>
                 </div>
@@ -80,12 +83,17 @@ export default function EmployeeTable({
                   <strong>{emp.employeeId}</strong>
                 </td>
                 <td>{emp.education}</td>
-                <td>{emp.city}</td>
-                <td>{emp.age}</td>
-                <td>{emp.gender}</td>
                 <td>{emp.joiningYear}</td>
+                <td>{emp.city}</td>
                 <td>
                   <span className="badge badge-tier">Tier {emp.paymentTier}</span>
+                </td>
+                <td>{emp.age}</td>
+                <td>{emp.gender}</td>
+                <td>{emp.everBenched}</td>
+                <td>
+                  {emp.experienceInCurrentDomain}{' '}
+                  {emp.experienceInCurrentDomain === 1 ? 'yr' : 'yrs'}
                 </td>
                 <td>
                   <span
