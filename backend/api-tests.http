@@ -1,0 +1,127 @@
+### ====================================================
+### Employee Data Management Portal - API Tests (.http)
+### ====================================================
+@baseUrl = http://localhost:8080/api
+
+### 1. Login as DEAN
+# @name deanLogin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "dean",
+  "password": "dean123"
+}
+
+### Save Dean token
+@deanToken = {{deanLogin.response.body.token}}
+
+### 2. Login as EMPLOYEE
+# @name employeeLogin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "employee",
+  "password": "emp123"
+}
+
+### Save Employee token
+@employeeToken = {{employeeLogin.response.body.token}}
+
+### 3. Login Failure - Invalid Password (Expect 401 Unauthorized)
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "dean",
+  "password": "wrongpassword"
+}
+
+### 4. DEAN Uploads XML Dataset (Expect 200 OK with recordsSaved)
+POST {{baseUrl}}/employees/upload
+Authorization: Bearer {{deanToken}}
+Content-Type: multipart/form-data; boundary=WebAppBoundary
+
+--WebAppBoundary
+Content-Disposition: form-data; name="file"; filename="sample-employees.xml"
+Content-Type: application/xml
+
+<employees>
+  <employee>
+    <employeeId>EMP0001</employeeId>
+    <education>Bachelors</education>
+    <joiningYear>2017</joiningYear>
+    <city>Bangalore</city>
+    <paymentTier>3</paymentTier>
+    <age>34</age>
+    <gender>Male</gender>
+    <everBenched>No</everBenched>
+    <experienceInCurrentDomain>0</experienceInCurrentDomain>
+    <leaveOrNot>0</leaveOrNot>
+  </employee>
+  <employee>
+    <employeeId>EMP0002</employeeId>
+    <education>Bachelors</education>
+    <joiningYear>2013</joiningYear>
+    <city>Pune</city>
+    <paymentTier>1</paymentTier>
+    <age>28</age>
+    <gender>Female</gender>
+    <everBenched>No</everBenched>
+    <experienceInCurrentDomain>3</experienceInCurrentDomain>
+    <leaveOrNot>1</leaveOrNot>
+  </employee>
+</employees>
+--WebAppBoundary--
+
+### 5. EMPLOYEE tries to Upload XML (Expect 403 Forbidden - Role Check)
+POST {{baseUrl}}/employees/upload
+Authorization: Bearer {{employeeToken}}
+Content-Type: multipart/form-data; boundary=WebAppBoundary
+
+--WebAppBoundary
+Content-Disposition: form-data; name="file"; filename="sample.xml"
+Content-Type: application/xml
+
+<employees></employees>
+--WebAppBoundary--
+
+### 6. Missing Authorization Token on Protected Endpoint (Expect 401 Unauthorized)
+GET {{baseUrl}}/employees
+
+### 7. Search and Pagination - Get First 10 Employees
+GET {{baseUrl}}/employees?page=0&size=10
+Authorization: Bearer {{employeeToken}}
+
+### 8. Search and Filter - By City (Bangalore)
+GET {{baseUrl}}/employees?city=Bangalore&page=0&size=10
+Authorization: Bearer {{employeeToken}}
+
+### 9. Search and Filter - By Gender (Female)
+GET {{baseUrl}}/employees?gender=Female&page=0&size=10
+Authorization: Bearer {{employeeToken}}
+
+### 10. Search Text (Free text search in ID, city, or education)
+GET {{baseUrl}}/employees?search=Pune&page=0&size=10
+Authorization: Bearer {{deanToken}}
+
+### 11. Get Single Employee by ID (Expect 200 OK)
+GET {{baseUrl}}/employees/EMP0001
+Authorization: Bearer {{employeeToken}}
+
+### 12. Get Non-Existent Employee by ID (Expect 404 Not Found)
+GET {{baseUrl}}/employees/EMP999999
+Authorization: Bearer {{employeeToken}}
+
+### 13. EMPLOYEE tries to Delete an Employee (Expect 403 Forbidden - Role Check)
+DELETE {{baseUrl}}/employees/EMP0001
+Authorization: Bearer {{employeeToken}}
+
+### 14. DEAN Deletes an Employee (Expect 204 No Content)
+DELETE {{baseUrl}}/employees/EMP0002
+Authorization: Bearer {{deanToken}}
+
+### 15. Export CSV with Current Filters (Expect 200 OK with text/csv attachment)
+GET {{baseUrl}}/employees/export?city=Bangalore
+Authorization: Bearer {{employeeToken}}
