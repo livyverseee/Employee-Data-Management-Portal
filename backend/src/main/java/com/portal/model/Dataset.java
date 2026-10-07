@@ -18,6 +18,7 @@ import java.time.LocalDateTime;
  * Table name: "datasets"
  * 
  * At most one dataset is active at any time.
+ * Stores metadata only; row data resides in a dynamic table named `ds_<id>`.
  */
 @Entity
 @Table(name = "datasets")
@@ -33,6 +34,12 @@ public class Dataset {
 
     @Column(name = "file_name", nullable = false)
     private String fileName;
+
+    @Column(name = "source_format", nullable = false, length = 20)
+    private String sourceFormat; // XLSX, CSV, JSON, XML
+
+    @Column(name = "table_name", nullable = false, length = 50)
+    private String tableName; // e.g. "ds_1"
 
     @Column(name = "uploaded_by", nullable = false, length = 50)
     private String uploadedBy;

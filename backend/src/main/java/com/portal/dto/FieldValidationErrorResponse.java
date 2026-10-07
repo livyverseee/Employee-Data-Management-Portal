@@ -5,14 +5,12 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-/**
- * DTO for XML file upload result.
- */
+import java.util.Map;
+
 @Getter
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
-public class UploadResponse {
-    private String message;
-    private int recordsSaved;
+public class FieldValidationErrorResponse {
+    private Map<String, String> errors;
 }

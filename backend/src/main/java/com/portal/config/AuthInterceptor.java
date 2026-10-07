@@ -15,18 +15,16 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 
 /**
- * Spring MVC HandlerInterceptor that intercepts protected endpoints under /api/dataset/** and /api/employees/**.
+ * Spring MVC HandlerInterceptor that intercepts protected endpoints under
+ * /api/dataset/**, /api/datasets/**, and /api/employees/**.
  * 
  * Rules:
  * 1. Skips preflight OPTIONS requests.
  * 2. Validates Bearer token presence and HMAC cryptographic integrity.
  * 3. Enforces Role-Based Access Control (RBAC):
- *    - POST /api/dataset/upload  -> DEAN only
- *    - POST /api/dataset/replace -> DEAN only
- *    - PUT /api/employees/**     -> DEAN only
- *    - DELETE /api/employees/**  -> DEAN only
- *    - GET /api/dataset/active   -> DEAN and EMPLOYEE allowed
- *    - GET /api/employees/**     -> DEAN and EMPLOYEE allowed
+ *    - Upload & Replace datasets -> DEAN only
+ *    - Delete / Edit records -> DEAN only
+ *    - View records, filter options, active status, schema, Excel export -> DEAN and EMPLOYEE allowed
  */
 @Component
 public class AuthInterceptor implements HandlerInterceptor {
@@ -76,14 +74,17 @@ public class AuthInterceptor implements HandlerInterceptor {
 
         // 5. Role restrictions:
         // DEAN-only operations:
-        // - POST /api/dataset/upload
-        // - POST /api/dataset/replace
-        // - PUT /api/employees/**
-        // - DELETE /api/employees/**
-        boolean isDatasetMutation = uri.startsWith("/api/dataset/upload") || uri.startsWith("/api/dataset/replace");
-        boolean isEmployeeMutation = ("PUT".equalsIgnoreCase(method) || "DELETE".equalsIgnoreCase(method)) && uri.startsWith("/api/employees");
+        // - Upload / Replace dataset
+        // - Download dataset XML (/api/dataset/xml)
+        // - Add / Edit / Delete records (POST, PUT, DELETE)
+        boolean isDeanOnly = "POST".equalsIgnoreCase(method)
+                || "PUT".equalsIgnoreCase(method)
+                || "DELETE".equalsIgnoreCase(method)
+                || uri.contains("/upload")
+                || uri.contains("/replace")
+                || uri.contains("/xml");
 
-        if (isDatasetMutation || isEmployeeMutation) {
+        if (isDeanOnly) {
             if (!"DEAN".equalsIgnoreCase(role)) {
                 writeErrorResponse(response, HttpStatus.FORBIDDEN, "You don't have permission");
                 return false;

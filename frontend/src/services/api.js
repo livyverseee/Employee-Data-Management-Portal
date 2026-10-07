@@ -7,7 +7,7 @@ const api = axios.create({
   baseURL: API_BASE_URL,
 });
 
-// Request interceptor: automatically attaches JWT/token header to all outgoing requests
+// Request interceptor: attaches Bearer token header to outgoing requests
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
@@ -20,7 +20,6 @@ api.interceptors.request.use(
 );
 
 // Response interceptor: handles 401 Unauthorized by clearing session and redirecting
-// Only redirects for non-auth requests so login/register error messages are not interrupted
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -64,7 +63,7 @@ export const registerEmployeeApi = (data) => {
 };
 
 // ====================================================
-// DATASET ENDPOINTS
+// DATASET LIFECYCLE ENDPOINTS
 // ====================================================
 
 export const getActiveDatasetApi = () => {
@@ -91,41 +90,56 @@ export const replaceDatasetApi = (file) => {
   });
 };
 
-// ====================================================
-// EMPLOYEE ENDPOINTS
-// ====================================================
-
-export const getEmployeesApi = (params) => {
-  return api.get('/employees', { params });
-};
-
-export const getFilterOptionsApi = () => {
-  return api.get('/employees/filter-options');
-};
-
-export const getEmployeeByIdApi = (id) => {
-  return api.get(`/employees/${encodeURIComponent(id)}`);
-};
-
-export const updateEmployeeApi = (id, data) => {
-  return api.put(`/employees/${encodeURIComponent(id)}`, data);
-};
-
-export const deleteEmployeeApi = (id) => {
-  return api.delete(`/employees/${encodeURIComponent(id)}`);
-};
-
-export const exportExcelApi = (params) => {
-  return api.get('/employees/export/excel', {
-    params,
-    responseType: 'blob', // Required for binary file download
+export const downloadDatasetXmlApi = () => {
+  return api.get('/dataset/xml', {
+    responseType: 'blob',
   });
 };
 
-export const exportCsvApi = (params) => {
-  return api.get('/employees/export', {
+// ====================================================
+// RECORD QUERY & CRUD ENDPOINTS
+// ====================================================
+
+export const getRecordsApi = (params = {}) => {
+  return api.get('/records', { params });
+};
+
+export const getEmployeesApi = getRecordsApi;
+
+export const getFilterOptionsApi = () => {
+  return api.get('/records/filter-options');
+};
+
+export const getRecordByIdApi = (id) => {
+  return api.get(`/records/${encodeURIComponent(id)}`);
+};
+
+export const getEmployeeByIdApi = getRecordByIdApi;
+
+export const addRecordApi = (data) => {
+  return api.post('/records', { data });
+};
+
+export const updateRecordApi = (id, data) => {
+  return api.put(`/records/${encodeURIComponent(id)}`, { data });
+};
+
+export const updateEmployeeApi = updateRecordApi;
+
+export const deleteRecordApi = (id) => {
+  return api.delete(`/records/${encodeURIComponent(id)}`);
+};
+
+export const deleteEmployeeApi = deleteRecordApi;
+
+// ====================================================
+// EXPORT ENDPOINT (Excel .xlsx only)
+// ====================================================
+
+export const exportExcelApi = (params = {}) => {
+  return api.get('/records/export/excel', {
     params,
-    responseType: 'blob', // Required for binary file download
+    responseType: 'blob', // Binary blob for .xlsx download
   });
 };
 

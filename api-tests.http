@@ -1,0 +1,209 @@
+### ==============================================================================
+### Employee Data Management Portal - API Tests (REST Client)
+### Compatible with VS Code REST Client extension, IntelliJ HTTP Client, etc.
+### Base URL: http://localhost:8080
+### ==============================================================================
+
+@baseUrl = http://localhost:8080/api
+
+### ------------------------------------------------------------------------------
+### 1. AUTHENTICATION & LOGIN
+### ------------------------------------------------------------------------------
+
+### 1.1 Dean Login (Valid credentials)
+# @name deanLogin
+POST {{baseUrl}}/auth/dean/login
+Content-Type: application/json
+
+{
+  "identifier": "dean",
+  "password": "dean123"
+}
+
+### Save Dean token
+@deanToken = {{deanLogin.response.body.token}}
+
+### 1.2 Employee Login (Valid credentials)
+# @name employeeLogin
+POST {{baseUrl}}/auth/employee/login
+Content-Type: application/json
+
+{
+  "identifier": "employee",
+  "password": "emp123"
+}
+
+### Save Employee token
+@employeeToken = {{employeeLogin.response.body.token}}
+
+### 1.3 Dean Registration (Requires Dean Access Code DEAN2026)
+POST {{baseUrl}}/auth/dean/register
+Content-Type: application/json
+
+{
+  "username": "newdean",
+  "email": "newdean@portal.com",
+  "password": "password123",
+  "fullName": "New Dean",
+  "deanAccessCode": "DEAN2026"
+}
+
+### 1.4 Employee Registration
+POST {{baseUrl}}/auth/employee/register
+Content-Type: application/json
+
+{
+  "username": "newemp",
+  "email": "newemp@portal.com",
+  "password": "password123",
+  "fullName": "New Staff Member"
+}
+
+
+### ------------------------------------------------------------------------------
+### 2. DATASET LIFECYCLE (DEAN ONLY)
+### ------------------------------------------------------------------------------
+
+### 2.1 Get Active Dataset Metadata & Columns (Dean or Employee)
+GET {{baseUrl}}/dataset/active
+Authorization: Bearer {{deanToken}}
+
+### 2.2 Download Standardized XML Representation (Dean only)
+GET {{baseUrl}}/dataset/xml
+Authorization: Bearer {{deanToken}}
+
+### 2.3 Upload Dataset (.xlsx, .csv, .json, or .xml) - Multipart form
+# Note: For file uploads, use curl or the portal UI at http://localhost:5173/dean/dashboard
+# Example curl:
+# curl -X POST http://localhost:8080/api/dataset/upload \
+#   -H "Authorization: Bearer <deanToken>" \
+#   -F "file=@sample-data/Employees.xlsx"
+
+
+### ------------------------------------------------------------------------------
+### 3. RECORDS DIRECTORY & MANDATORY PAGINATION
+### ------------------------------------------------------------------------------
+
+### 3.1 Get Paginated Records (Page 0, Size 10)
+GET {{baseUrl}}/records?page=0&size=10
+Authorization: Bearer {{deanToken}}
+
+### 3.2 Get Dynamic Filter Options (Categories + Numeric/Date Ranges)
+GET {{baseUrl}}/records/filter-options
+Authorization: Bearer {{deanToken}}
+
+### 3.3 Search across all columns
+GET {{baseUrl}}/records?page=0&size=10&search=Egypt
+Authorization: Bearer {{deanToken}}
+
+### 3.4 Filter by Category (e.g., gender=Female & country=Egypt)
+GET {{baseUrl}}/records?page=0&size=10&eq_gender=Female&eq_country=Egypt
+Authorization: Bearer {{deanToken}}
+
+### 3.5 Filter by Numeric Range (min_monthly_salary & max_monthly_salary)
+GET {{baseUrl}}/records?page=0&size=10&min_monthly_salary=1500&max_monthly_salary=2000
+Authorization: Bearer {{deanToken}}
+
+### 3.6 Filter by Date Range (from_start_date & to_start_date)
+GET {{baseUrl}}/records?page=0&size=10&from_start_date=2018-01-01&to_start_date=2020-12-31
+Authorization: Bearer {{deanToken}}
+
+
+### ------------------------------------------------------------------------------
+### 4. RECORD CRUD OPERATIONS (DEAN ONLY)
+### ------------------------------------------------------------------------------
+
+### 4.1 Add New Record (Dean only)
+# @name createRecord
+POST {{baseUrl}}/records
+Authorization: Bearer {{deanToken}}
+Content-Type: application/json
+
+{
+  "data": {
+    "no": 9001,
+    "first_name": "Alexander",
+    "last_name": "Pierce",
+    "gender": "Male",
+    "start_date": "2023-05-10",
+    "years": 2,
+    "department": "Engineering",
+    "country": "Egypt",
+    "center": "Cairo",
+    "monthly_salary": 3200,
+    "annual_salary": 38400,
+    "job_rate": 4.5,
+    "sick_leaves": 2,
+    "unpaid_leaves": 0,
+    "overtime_hours": 15
+  }
+}
+
+### Capture new record id
+@createdId = {{createRecord.response.body.id}}
+
+### 4.2 Get Record Details by ID
+GET {{baseUrl}}/records/{{createdId}}
+Authorization: Bearer {{deanToken}}
+
+### 4.3 Update Record (Dean only)
+PUT {{baseUrl}}/records/{{createdId}}
+Authorization: Bearer {{deanToken}}
+Content-Type: application/json
+
+{
+  "data": {
+    "no": 9001,
+    "first_name": "Alexander",
+    "last_name": "Pierce",
+    "gender": "Male",
+    "start_date": "2023-05-10",
+    "years": 3,
+    "department": "Engineering",
+    "country": "Egypt",
+    "center": "Cairo",
+    "monthly_salary": 3500,
+    "annual_salary": 42000,
+    "job_rate": 4.8,
+    "sick_leaves": 1,
+    "unpaid_leaves": 0,
+    "overtime_hours": 10
+  }
+}
+
+### 4.4 Delete Record (Dean only)
+DELETE {{baseUrl}}/records/{{createdId}}
+Authorization: Bearer {{deanToken}}
+
+
+### ------------------------------------------------------------------------------
+### 5. DUAL EXPORTS (DEAN & EMPLOYEE)
+### ------------------------------------------------------------------------------
+
+### 5.1 Export Filtered Records as Excel (.xlsx via Apache POI SXSSFWorkbook)
+GET {{baseUrl}}/records/export/excel?eq_country=Egypt
+Authorization: Bearer {{deanToken}}
+
+### 5.2 Export Filtered Records as CSV (.csv with UTF-8 BOM)
+GET {{baseUrl}}/records/export?eq_country=Egypt
+Authorization: Bearer {{deanToken}}
+
+
+### ------------------------------------------------------------------------------
+### 6. RBAC PERMISSION CHECKS (EMPLOYEE FORBIDDEN ACTIONS)
+### ------------------------------------------------------------------------------
+
+### 6.1 Employee attempts to Add Record (Must return 403 Forbidden)
+POST {{baseUrl}}/records
+Authorization: Bearer {{employeeToken}}
+Content-Type: application/json
+
+{
+  "data": {
+    "first_name": "Hacker"
+  }
+}
+
+### 6.2 Employee attempts to Download Dataset XML (Must return 403 Forbidden)
+GET {{baseUrl}}/dataset/xml
+Authorization: Bearer {{employeeToken}}

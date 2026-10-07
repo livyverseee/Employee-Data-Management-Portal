@@ -1,65 +1,64 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Header from '../../components/Header';
 import DatasetInfoBar from '../../components/DatasetInfoBar';
-import EmployeeTable from '../../components/EmployeeTable';
-import Pagination from '../../components/Pagination';
-import EmployeeModal from '../../components/EmployeeModal';
+import DynamicTable from '../../components/DynamicTable';
+import PaginationBar from '../../components/PaginationBar';
+import RecordDetailsModal from '../../components/RecordDetailsModal';
 import Toast from '../../components/Toast';
 import {
   getActiveDatasetApi,
-  getEmployeesApi,
+  getRecordsApi,
   getFilterOptionsApi,
-  exportCsvApi,
   exportExcelApi,
 } from '../../services/api';
 
 /**
  * Employee Dashboard (/employee/dashboard):
- * - View-only workforce directory for employees.
- * - Dynamic column filtering, global search, detail inspection, and Excel/CSV export.
- * - Cannot upload, replace, edit, or delete datasets or records.
+ * - Read-only workforce directory for employees.
+ * - Dynamic column filtering, global text search, detail inspection modal.
+ * - Export Excel (.xlsx) scoped to active filters.
+ * - No Add, Edit, Delete, Upload, Replace, or XML download anywhere.
+ * - No dataset message: "The dean has not uploaded any data yet."
  * - Styled with the Teal/Green Employee portal theme.
  */
 export default function EmployeeDashboard() {
-  // Dataset metadata
-  const [dataset, setDataset] = useState({ exists: false });
+  // Dataset metadata & schema
+  const [dataset, setDataset] = useState({ exists: false, columns: [] });
   const [loadingDataset, setLoadingDataset] = useState(true);
 
-  // Employee list & pagination
-  const [employees, setEmployees] = useState([]);
+  // Paginated records
+  const [records, setRecords] = useState([]);
   const [currentPage, setCurrentPage] = useState(0);
-  const [pageSize] = useState(10);
+  const [pageSize, setPageSize] = useState(10);
   const [totalPages, setTotalPages] = useState(0);
   const [totalElements, setTotalElements] = useState(0);
-  const [loadingEmployees, setLoadingEmployees] = useState(false);
+  const [loadingRecords, setLoadingRecords] = useState(false);
 
-  // Filters state
-  const [filters, setFilters] = useState({
-    search: '',
-    employeeId: '',
-    education: '',
-    city: '',
-    joiningYear: '',
-    paymentTier: '',
-    ageMin: '',
-    ageMax: '',
-    gender: '',
-    everBenched: '',
-    experienceInCurrentDomain: '',
-    leaveOrNot: '',
-  });
+  // Search & Filters
+  const [filters, setFilters] = useState({});
+  const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
-  // Dynamic filter options populated from active dataset
+  // Debounce global search term (350ms) to ensure continuous typing without lagging or loss of focus
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  // Dynamic filter options
   const [filterOptions, setFilterOptions] = useState({});
   const [filterOptionsError, setFilterOptionsError] = useState(null);
 
   // Details Modal
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState(null);
+  const [detailsRecord, setDetailsRecord] = useState(null);
 
-  // Toast & Export state
+  // Toast & Export states
   const [toast, setToast] = useState(null);
   const [exportingExcel, setExportingExcel] = useState(false);
-  const [exportingCsv, setExportingCsv] = useState(false);
+
+  const columns = dataset.columns || [];
 
   // Fetch active dataset info
   const fetchDatasetInfo = useCallback(async () => {
@@ -68,14 +67,14 @@ export default function EmployeeDashboard() {
       setDataset(res.data);
       return res.data;
     } catch {
-      setDataset({ exists: false });
-      return { exists: false };
+      setDataset({ exists: false, columns: [] });
+      return { exists: false, columns: [] };
     } finally {
       setLoadingDataset(false);
     }
   }, []);
 
-  // Fetch distinct filter options
+  // Fetch filter options
   const fetchFilterOptions = useCallback(async () => {
     try {
       setFilterOptionsError(null);
@@ -87,159 +86,133 @@ export default function EmployeeDashboard() {
     }
   }, []);
 
-  // Fetch employees matching active criteria
-  const fetchEmployees = useCallback(async () => {
+  // Fetch records
+  const fetchRecords = useCallback(async () => {
     if (!dataset.exists) {
-      setEmployees([]);
+      setRecords([]);
       setTotalPages(0);
       setTotalElements(0);
       return;
     }
 
-    setLoadingEmployees(true);
+    setLoadingRecords(true);
 
     const params = {
       page: currentPage,
       size: pageSize,
     };
 
+    if (debouncedSearch && debouncedSearch.trim()) {
+      params.search = debouncedSearch.trim();
+    }
+
     Object.entries(filters).forEach(([key, val]) => {
-      if (val !== '' && val !== null && val !== undefined) {
+      if (val !== '' && val !== null && val !== undefined && val !== 'all') {
         params[key] = val;
       }
     });
 
     try {
-      const res = await getEmployeesApi(params);
+      const res = await getRecordsApi(params);
       const data = res.data;
-      setEmployees(data.content || []);
+      setRecords(data.content || []);
       setTotalPages(data.totalPages || 0);
       setTotalElements(data.totalElements || 0);
     } catch (err) {
-      const msg = err.response?.data?.message || 'Failed to load employees';
-      setToast({ type: 'error', message: msg });
+      const msg = err.response?.data?.message || err.message || 'Failed to load records';
+      setToast({ message: msg, type: 'error' });
+      setRecords([]);
     } finally {
-      setLoadingEmployees(false);
+      setLoadingRecords(false);
     }
-  }, [dataset.exists, currentPage, pageSize, filters]);
+  }, [dataset.exists, currentPage, pageSize, filters, debouncedSearch]);
 
   // Initial load
   useEffect(() => {
-    fetchDatasetInfo().then((ds) => {
-      if (ds && ds.exists) {
-        fetchFilterOptions();
-      }
-    });
-  }, [fetchDatasetInfo, fetchFilterOptions]);
+    fetchDatasetInfo();
+  }, [fetchDatasetInfo]);
 
-  // Refetch when filters or page changes
+  // When active dataset, page, pageSize, filters, or debounced search changes, reload records
   useEffect(() => {
     if (dataset.exists) {
-      fetchEmployees();
+      fetchRecords();
     }
-  }, [dataset.exists, fetchEmployees]);
+  }, [dataset.exists, currentPage, pageSize, filters, debouncedSearch, fetchRecords]);
 
-  // Handle filter changes
+  // Fetch filter options when active dataset is loaded/replaced
+  useEffect(() => {
+    if (dataset.exists) {
+      fetchFilterOptions();
+    }
+  }, [dataset.id, dataset.exists, fetchFilterOptions]);
+
   const handleFilterChange = (newFilters) => {
-    setCurrentPage(0);
     setFilters(newFilters);
-  };
-
-  // Clear all filters
-  const handleClearFilters = () => {
     setCurrentPage(0);
-    setFilters({
-      search: '',
-      employeeId: '',
-      education: '',
-      city: '',
-      joiningYear: '',
-      paymentTier: '',
-      ageMin: '',
-      ageMax: '',
-      gender: '',
-      everBenched: '',
-      experienceInCurrentDomain: '',
-      leaveOrNot: '',
-    });
   };
 
-  // Export filtered dataset to Excel (.xlsx)
+  const handleClearFilters = () => {
+    setFilters({});
+    setSearchTerm('');
+    setDebouncedSearch('');
+    setCurrentPage(0);
+  };
+
+  const handleSearchChange = (e) => {
+    setSearchTerm(e.target.value);
+    setCurrentPage(0);
+  };
+
+  const handlePageSizeChange = (newSize) => {
+    setPageSize(newSize);
+    setCurrentPage(0);
+  };
+
+  const getExportParams = () => {
+    const params = {};
+    if (searchTerm && searchTerm.trim()) {
+      params.search = searchTerm.trim();
+    }
+    Object.entries(filters).forEach(([k, v]) => {
+      if (v !== '' && v !== null && v !== undefined && v !== 'all') {
+        params[k] = v;
+      }
+    });
+    return params;
+  };
+
+  // Export Excel
   const handleExportExcel = async () => {
     if (totalElements === 0) {
-      setToast({ type: 'info', message: 'No records to export' });
+      setToast({ message: 'No records to export', type: 'info' });
       return;
     }
 
     setExportingExcel(true);
-    const params = {};
-    Object.entries(filters).forEach(([k, v]) => {
-      if (v !== '' && v !== null && v !== undefined) {
-        params[k] = v;
-      }
-    });
-
     try {
-      const response = await exportExcelApi(params);
-      const blob = new Blob([response.data], {
+      const res = await exportExcelApi(getExportParams());
+      const blob = new Blob([res.data], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = 'employees.xlsx';
+      link.download = 'employee_data.xlsx';
       document.body.appendChild(link);
       link.click();
-      link.parentNode.removeChild(link);
+      document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
-
-      setToast({ type: 'success', message: 'Excel export downloaded successfully (employees.xlsx).' });
+      setToast({ message: 'Excel file exported successfully (employee_data.xlsx)', type: 'success' });
     } catch (err) {
-      const msg = err.response?.data?.message || 'Failed to export Excel file';
-      setToast({ type: 'error', message: msg });
+      const msg = err.response?.data?.message || err.message || 'Failed to export Excel';
+      setToast({ message: msg, type: 'error' });
     } finally {
       setExportingExcel(false);
     }
   };
 
-  // Export CSV
-  const handleExportCsv = async () => {
-    if (totalElements === 0) {
-      setToast({ type: 'info', message: 'No records to export' });
-      return;
-    }
-
-    setExportingCsv(true);
-    const params = {};
-    Object.entries(filters).forEach(([k, v]) => {
-      if (v !== '' && v !== null && v !== undefined) {
-        params[k] = v;
-      }
-    });
-
-    try {
-      const response = await exportCsvApi(params);
-      const blob = new Blob([response.data], { type: 'text/csv;charset=utf-8;' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'employees.csv';
-      document.body.appendChild(link);
-      link.click();
-      link.parentNode.removeChild(link);
-      window.URL.revokeObjectURL(url);
-
-      setToast({ type: 'success', message: 'CSV export downloaded successfully (employees.csv).' });
-    } catch (err) {
-      const msg = err.response?.data?.message || 'Failed to export CSV file';
-      setToast({ type: 'error', message: msg });
-    } finally {
-      setExportingCsv(false);
-    }
-  };
-
   return (
-    <div className="dashboard-wrapper portal-theme-employee">
+    <div className="portal-container employee-portal">
       <Header role="EMPLOYEE" />
 
       {toast && (
@@ -250,119 +223,118 @@ export default function EmployeeDashboard() {
         />
       )}
 
-      <main className="dashboard-content">
+      <main className="dashboard-content" style={{ maxWidth: '1440px', margin: '0 auto', padding: '24px 20px' }}>
         {loadingDataset ? (
           <div className="loading-indicator">
             <span>Loading portal data...</span>
           </div>
         ) : !dataset.exists ? (
           /* ================= NO DATASET STATE ================= */
-          <div className="empty-portal-card">
-            <div className="empty-portal-icon">📋</div>
-            <h3>No Dataset Uploaded</h3>
-            <p>
-              No employee dataset has been uploaded by the Dean yet. Please check back later or
-              contact the portal administrator.
+          <div className="empty-portal-card" style={{ maxWidth: '540px', margin: '60px auto', textAlign: 'center', padding: '40px 24px', backgroundColor: '#fff', borderRadius: '12px', border: '1px solid #e5e7eb' }}>
+            <div className="empty-portal-icon" style={{ fontSize: '3rem', marginBottom: '12px' }}>📋</div>
+            <h3 style={{ color: '#111827', marginBottom: '8px' }}>No Data Available</h3>
+            <p style={{ color: '#6b7280', fontSize: '0.95rem' }}>
+              The dean has not uploaded any data yet.
             </p>
           </div>
         ) : (
           /* ================= ACTIVE DATASET VIEW ================= */
           <div className="active-dataset-view">
             {/* Read-Only Info Bar */}
-            <DatasetInfoBar dataset={dataset} canReplace={false} />
+            <DatasetInfoBar dataset={dataset} isDean={false} />
 
-            {/* Global Search & Export Toolbar */}
-            <div className="dashboard-toolbar">
-              <div className="search-input-wrapper">
-                <span className="search-icon">🔍</span>
-                <input
-                  type="text"
-                  placeholder="Quick search by ID, City, or Education..."
-                  className="global-search-input"
-                  value={filters.search}
-                  onChange={(e) =>
-                    handleFilterChange({ ...filters, search: e.target.value })
-                  }
-                />
-                {filters.search && (
-                  <button
-                    type="button"
-                    className="search-clear-btn"
-                    onClick={() => handleFilterChange({ ...filters, search: '' })}
-                  >
-                    &times;
-                  </button>
-                )}
+            {/* Global Search & Single Excel Export Toolbar */}
+            <div className="dashboard-toolbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', gap: '14px', flexWrap: 'wrap' }}>
+              <div className="toolbar-search-wrapper" style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: '1', minWidth: '280px', maxWidth: '520px' }}>
+                <div className="search-input-wrapper" style={{ position: 'relative', width: '100%' }}>
+                  <span className="search-icon" style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#9ca3af' }}>🔍</span>
+                  <input
+                    type="text"
+                    placeholder="Search across all text columns..."
+                    className="global-search-input"
+                    value={searchTerm}
+                    onChange={handleSearchChange}
+                    style={{ width: '100%', padding: '9px 36px 9px 38px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '0.9rem' }}
+                  />
+                  {searchTerm && (
+                    <button
+                      type="button"
+                      className="search-clear-btn"
+                      onClick={() => { setSearchTerm(''); setDebouncedSearch(''); setCurrentPage(0); }}
+                      style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1rem', color: '#9ca3af' }}
+                    >
+                      &times;
+                    </button>
+                  )}
+                </div>
+                <span className="matching-records-badge" style={{ fontSize: '0.85rem', color: '#4b5563', whiteSpace: 'nowrap' }}>
+                  {totalElements.toLocaleString()} matching {totalElements === 1 ? 'record' : 'records'}
+                </span>
               </div>
 
-              <div className="toolbar-actions">
+              {/* Single Excel Export Button */}
+              <div className="toolbar-actions" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <button
                   type="button"
                   className="btn btn-primary"
                   onClick={handleExportExcel}
-                  disabled={exportingExcel || exportingCsv || totalElements === 0}
-                  title="Export filtered records as Excel (.xlsx)"
+                  disabled={exportingExcel || totalElements === 0}
+                  title="Export filtered records as an Excel spreadsheet (.xlsx)"
                 >
                   {exportingExcel ? 'Exporting...' : '📊 Export Excel'}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  onClick={handleExportCsv}
-                  disabled={exportingExcel || exportingCsv || totalElements === 0}
-                  title="Export filtered records as CSV (.csv)"
-                >
-                  {exportingCsv ? 'Exporting...' : '📄 Export CSV'}
                 </button>
               </div>
             </div>
 
-            {/* Employee Records Card */}
-            <div className="table-card">
-              <div className="table-card-header">
-                <div>
-                  <h3>Workforce Directory</h3>
-                  <p className="table-card-sub">
-                    Showing {employees.length} of {totalElements.toLocaleString()} records
-                  </p>
-                </div>
-              </div>
-
-              {loadingEmployees ? (
-                <div className="loading-indicator">
-                  <span>Loading employees...</span>
-                </div>
-              ) : (
-                <>
-                  <EmployeeTable
-                    employees={employees}
-                    canEdit={false}
-                    onRowClick={(id) => setSelectedEmployeeId(id)}
-                    filters={filters}
-                    filterOptions={filterOptions}
-                    filterOptionsError={filterOptionsError}
-                    onFilterChange={handleFilterChange}
-                    onClearFilters={handleClearFilters}
-                  />
-
-                  <Pagination
-                    currentPage={currentPage}
-                    totalPages={totalPages}
-                    totalElements={totalElements}
-                    onPageChange={(p) => setCurrentPage(p)}
-                  />
-                </>
+            {/* Dynamic Records Card - Permanently mounted to guarantee input focus is preserved */}
+            <div className="table-card" style={{ backgroundColor: '#fff', borderRadius: '12px', border: '1px solid #e5e7eb', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', overflow: 'hidden', position: 'relative' }}>
+              {loadingRecords && (
+                <div
+                  className="table-loading-bar"
+                  style={{
+                    height: '3px',
+                    width: '100%',
+                    backgroundColor: '#10b981',
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    zIndex: 5,
+                  }}
+                />
               )}
+
+              <DynamicTable
+                records={records}
+                columns={columns}
+                loading={loadingRecords}
+                canEdit={false}
+                onRowClick={(rec) => setDetailsRecord(rec)}
+                filters={filters}
+                filterOptions={filterOptions}
+                filterOptionsError={filterOptionsError}
+                onFilterChange={handleFilterChange}
+                onClearFilters={handleClearFilters}
+              />
+
+              <PaginationBar
+                currentPage={currentPage}
+                pageSize={pageSize}
+                totalPages={totalPages}
+                totalElements={totalElements}
+                onPageChange={(p) => setCurrentPage(p)}
+                onPageSizeChange={handlePageSizeChange}
+              />
             </div>
           </div>
         )}
       </main>
 
-      {/* Details Modal */}
-      {selectedEmployeeId && (
-        <EmployeeModal
-          id={selectedEmployeeId}
-          onClose={() => setSelectedEmployeeId(null)}
+      {/* Record Details Modal */}
+      {detailsRecord && (
+        <RecordDetailsModal
+          record={detailsRecord}
+          columns={columns}
+          onClose={() => setDetailsRecord(null)}
         />
       )}
     </div>

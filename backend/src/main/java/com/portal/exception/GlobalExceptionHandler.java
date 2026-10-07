@@ -27,6 +27,11 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
     }
 
+    @ExceptionHandler(com.portal.service.DynamicTableService.FieldValidationException.class)
+    public ResponseEntity<com.portal.dto.FieldValidationErrorResponse> handleFieldValidation(com.portal.service.DynamicTableService.FieldValidationException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new com.portal.dto.FieldValidationErrorResponse(ex.getErrors()));
+    }
+
     @ExceptionHandler(UnauthorizedException.class)
     public ResponseEntity<ErrorResponse> handleUnauthorized(UnauthorizedException ex) {
         ErrorResponse error = new ErrorResponse(LocalDateTime.now(), HttpStatus.UNAUTHORIZED.value(), ex.getMessage());

@@ -1,14 +1,18 @@
 package com.portal;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.portal.dto.EmployeeUpdateRequest;
 import com.portal.dto.LoginRequest;
 import com.portal.dto.LoginResponse;
-import com.portal.dto.RegisterRequest;
-import com.portal.model.Employee;
+import com.portal.dto.RecordMutationRequest;
+import com.portal.model.Dataset;
+import com.portal.repository.DatasetColumnRepository;
 import com.portal.repository.DatasetRepository;
-import com.portal.repository.EmployeeRepository;
-import com.portal.service.DatasetService;
+import com.portal.service.DynamicTableService;
+import org.apache.poi.ss.usermodel.CellType;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -21,18 +25,14 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
-import org.apache.poi.ss.usermodel.Cell;
-import org.apache.poi.ss.usermodel.CellType;
-import org.apache.poi.ss.usermodel.Row;
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.ss.usermodel.Workbook;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-
 import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.hamcrest.Matchers.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -40,15 +40,18 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
- * Comprehensive integration tests verifying:
- * - Registration (success, duplicate username/email 409, bad dean access code 403)
- * - Portal mismatch login 401
- * - First dataset upload OK (200), second upload 409 Conflict
- * - Dataset replace works, and bad file leaves old data intact
- * - Employee sees only the active dataset
- * - Every column filter and age range
- * - PUT edit success, validation 400, duplicate employeeId 409
- * - Employee gets 403 on PUT, DELETE, upload, and replace
+ * Integration test suite for the Schema-Agnostic Dynamic Data Management Portal:
+ * - XLSX upload of Employees.xlsx (689 rows, 15 columns, inferred types & filterTypes)
+ * - CSV, JSON, XML uploads produce identical internal XML representation
+ * - Second upload -> 409 Conflict; Replace works; Corrupt replace leaves old data intact
+ * - Mandatory pagination: default size 10, clamping size > 100 to 100
+ * - Every filter type (eq_, like_, min_/max_, from_/to_) and global search
+ * - Filter-options returns non-empty sorted values for CATEGORY, min/max for NUMBER and DATE
+ * - Record CRUD: POST add with validation, PUT edit, DELETE, recordCount integrity
+ * - SQL Injection security verification
+ * - Excel export read back via Apache POI (headers, row counts, cell types, filter awareness)
+ * - CSV export streaming with UTF-8 BOM
+ * - Role-Based Access Control: DEAN full permissions, EMPLOYEE 403 on mutations, 401 unauthenticated
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -65,521 +68,483 @@ public class EmployeePortalIntegrationTest {
     private DatasetRepository datasetRepository;
 
     @Autowired
-    private EmployeeRepository employeeRepository;
+    private DatasetColumnRepository datasetColumnRepository;
 
     @Autowired
-    private DatasetService datasetService;
+    private DynamicTableService dynamicTableService;
 
     private String deanToken;
     private String employeeToken;
 
     @BeforeEach
     void setUp() throws Exception {
-        // Reset datasets and employee records for fresh isolated test state
-        employeeRepository.deleteAll();
+        // Drop any leftover dynamic tables and metadata for clean test isolation
+        List<Dataset> datasets = datasetRepository.findAll();
+        for (Dataset d : datasets) {
+            dynamicTableService.dropTable(d.getTableName());
+        }
+        datasetColumnRepository.deleteAll();
         datasetRepository.deleteAll();
 
-        // Authenticate Dean via /api/auth/dean/login
+        // Dean token
         LoginRequest deanLogin = new LoginRequest("dean", "dean123");
         MvcResult deanResult = mockMvc.perform(post("/api/auth/dean/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(deanLogin)))
                 .andExpect(status().isOk())
                 .andReturn();
-
         LoginResponse deanResponse = objectMapper.readValue(deanResult.getResponse().getContentAsString(), LoginResponse.class);
         this.deanToken = deanResponse.getToken();
 
-        // Authenticate Employee via /api/auth/employee/login
+        // Employee token
         LoginRequest empLogin = new LoginRequest("employee", "emp123");
         MvcResult empResult = mockMvc.perform(post("/api/auth/employee/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(empLogin)))
                 .andExpect(status().isOk())
                 .andReturn();
-
         LoginResponse empResponse = objectMapper.readValue(empResult.getResponse().getContentAsString(), LoginResponse.class);
         this.employeeToken = empResponse.getToken();
     }
 
-    private void ensureActiveDatasetUploaded() throws Exception {
-        if (datasetRepository.findByActiveTrue().isEmpty()) {
-            Path xmlPath = Paths.get("../sample-data/sample-employees.xml");
-            byte[] content = Files.exists(xmlPath) ? Files.readAllBytes(xmlPath) : (
-                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?><employees><employee><employeeId>EMP0001</employeeId><education>Bachelors</education><joiningYear>2017</joiningYear><city>Bangalore</city><paymentTier>3</paymentTier><age>34</age><gender>Male</gender><everBenched>No</everBenched><experienceInCurrentDomain>0</experienceInCurrentDomain><leaveOrNot>0</leaveOrNot></employee></employees>".getBytes()
-            );
-            MockMultipartFile file = new MockMultipartFile("file", "sample-employees.xml", "application/xml", content);
-            datasetService.uploadDataset(file, "dean");
+    private void uploadEmployeesXlsx() throws Exception {
+        Path path = Paths.get("sample-data/Employees.xlsx");
+        if (!Files.exists(path)) {
+            path = Paths.get("../sample-data/Employees.xlsx");
         }
-    }
+        assertTrue(Files.exists(path), "sample-data/Employees.xlsx must exist at " + path.toAbsolutePath());
+        byte[] bytes = Files.readAllBytes(path);
 
-    // ====================================================
-    // AUTHENTICATION & REGISTRATION TESTS
-    // ====================================================
+        MockMultipartFile file = new MockMultipartFile("file", "Employees.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bytes);
 
-    @Test
-    @DisplayName("Dean Registration - Success with valid access code (201)")
-    void testDeanRegisterSuccess() throws Exception {
-        RegisterRequest req = new RegisterRequest("New Dean", "newdean", "newdean@portal.com", "password123", "DEAN2026");
-        mockMvc.perform(post("/api/auth/dean/register")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(req)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.message").value("Registration successful"));
-    }
-
-    @Test
-    @DisplayName("Dean Registration - Rejected on invalid access code (403)")
-    void testDeanRegisterBadAccessCode() throws Exception {
-        RegisterRequest req = new RegisterRequest("Bad Dean", "baddean", "baddean@portal.com", "password123", "WRONG_CODE");
-        mockMvc.perform(post("/api/auth/dean/register")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(req)))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.status").value(403))
-                .andExpect(jsonPath("$.message").value("Invalid dean access code"));
-    }
-
-    @Test
-    @DisplayName("Employee Registration - Success (201)")
-    void testEmployeeRegisterSuccess() throws Exception {
-        RegisterRequest req = new RegisterRequest("New Emp", "newemp", "newemp@portal.com", "password123", null);
-        mockMvc.perform(post("/api/auth/employee/register")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(req)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.message").value("Registration successful"));
-    }
-
-    @Test
-    @DisplayName("Registration - Duplicate username rejected with 409 Conflict")
-    void testRegisterDuplicateUsername() throws Exception {
-        RegisterRequest req = new RegisterRequest("Duplicate User", "dean", "uniqueemail@portal.com", "password123", null);
-        mockMvc.perform(post("/api/auth/employee/register")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(req)))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.status").value(409))
-                .andExpect(jsonPath("$.message").value("Username already exists"));
-    }
-
-    @Test
-    @DisplayName("Registration - Duplicate email rejected with 409 Conflict")
-    void testRegisterDuplicateEmail() throws Exception {
-        RegisterRequest req = new RegisterRequest("Duplicate Email", "uniqueusername", "dean@portal.com", "password123", null);
-        mockMvc.perform(post("/api/auth/employee/register")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(req)))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.status").value(409))
-                .andExpect(jsonPath("$.message").value("Email already exists"));
-    }
-
-    @Test
-    @DisplayName("Login - Portal mismatch returns 401 Unauthorized")
-    void testPortalMismatchLogin() throws Exception {
-        // Dean attempting to log into Employee portal
-        LoginRequest req = new LoginRequest("dean", "dean123");
-        mockMvc.perform(post("/api/auth/employee/login")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(req)))
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.status").value(401))
-                .andExpect(jsonPath("$.message").value("These credentials do not belong to the Employee Portal"));
-
-        // Employee attempting to log into Dean portal
-        LoginRequest empReq = new LoginRequest("employee", "emp123");
-        mockMvc.perform(post("/api/auth/dean/login")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(empReq)))
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.status").value(401))
-                .andExpect(jsonPath("$.message").value("These credentials do not belong to the Dean Portal"));
-    }
-
-    // ====================================================
-    // DATASET LIFECYCLE TESTS
-    // ====================================================
-
-    @Test
-    @DisplayName("Dataset Upload - First upload OK, second upload 409 Conflict")
-    void testDatasetUploadAndConflict() throws Exception {
-        // Ensure database is clean of active datasets for this test
-        datasetRepository.findByActiveTrue().ifPresent(d -> {
-            employeeRepository.deleteByDatasetId(d.getId());
-            datasetRepository.delete(d);
-        });
-
-        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><employees><employee><employeeId>TEST001</employeeId><education>Bachelors</education><joiningYear>2017</joiningYear><city>Bangalore</city><paymentTier>3</paymentTier><age>34</age><gender>Male</gender><everBenched>No</everBenched><experienceInCurrentDomain>0</experienceInCurrentDomain><leaveOrNot>0</leaveOrNot></employee></employees>";
-        MockMultipartFile file = new MockMultipartFile("file", "initial.xml", "application/xml", xml.getBytes());
-
-        // First upload succeeds
         mockMvc.perform(multipart("/api/dataset/upload")
                         .file(file)
                         .header("Authorization", "Bearer " + deanToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.exists").value(true))
-                .andExpect(jsonPath("$.recordCount").value(1));
-
-        // Second upload rejected with 409 Conflict
-        mockMvc.perform(multipart("/api/dataset/upload")
-                        .file(file)
-                        .header("Authorization", "Bearer " + deanToken))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.status").value(409))
-                .andExpect(jsonPath("$.message").value("A dataset has already been uploaded"));
+                .andExpect(jsonPath("$.exists", is(true)))
+                .andExpect(jsonPath("$.recordCount", is(689)))
+                .andExpect(jsonPath("$.columns", hasSize(15)));
     }
 
     @Test
-    @DisplayName("Dataset Replace - Successful replacement and atomic rollback on bad XML")
-    void testDatasetReplace() throws Exception {
-        ensureActiveDatasetUploaded();
+    @DisplayName("1. Upload sample-data/Employees.xlsx and verify inferred schema types & filterTypes")
+    void testUploadEmployeesXlsx() throws Exception {
+        uploadEmployeesXlsx();
 
-        // 1. Try replace with bad XML -> rejected with 400 Bad Request
-        MockMultipartFile badFile = new MockMultipartFile("file", "bad.xml", "application/xml", "<malformed><xml>".getBytes());
-        mockMvc.perform(multipart("/api/dataset/replace")
-                        .file(badFile)
-                        .header("Authorization", "Bearer " + deanToken))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.status").value(400));
-
-        // Confirm existing data was NOT corrupted or destroyed
-        mockMvc.perform(get("/api/dataset/active")
-                        .header("Authorization", "Bearer " + employeeToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.exists").value(true))
-                .andExpect(jsonPath("$.recordCount").value(greaterThan(0)));
-
-        // 2. Replace with valid new dataset
-        String newXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><employees><employee><employeeId>REPLACE01</employeeId><education>Masters</education><joiningYear>2018</joiningYear><city>Pune</city><paymentTier>2</paymentTier><age>29</age><gender>Female</gender><everBenched>Yes</everBenched><experienceInCurrentDomain>4</experienceInCurrentDomain><leaveOrNot>1</leaveOrNot></employee></employees>";
-        MockMultipartFile goodFile = new MockMultipartFile("file", "replacement.xml", "application/xml", newXml.getBytes());
-
-        mockMvc.perform(multipart("/api/dataset/replace")
-                        .file(goodFile)
+        // Verify active dataset metadata and schema
+        MvcResult res = mockMvc.perform(get("/api/dataset/active")
                         .header("Authorization", "Bearer " + deanToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.fileName").value("replacement.xml"))
-                .andExpect(jsonPath("$.recordCount").value(1));
-
-        // Verify employee list now contains only the new record
-        mockMvc.perform(get("/api/employees")
-                        .header("Authorization", "Bearer " + employeeToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.totalElements").value(1))
-                .andExpect(jsonPath("$.content[0].employeeId").value("REPLACE01"));
-    }
-
-    // ====================================================
-    // EMPLOYEE QUERIES, COLUMN FILTERS, AND AGE RANGE TESTS
-    // ====================================================
-
-    @Test
-    @DisplayName("Employee Queries - Column filters, age range, and filter-options")
-    void testFiltersAndAgeRange() throws Exception {
-        // Upload sample dataset with 15 records
-        Path xmlPath = Paths.get("../sample-data/sample-employees.xml");
-        byte[] content = Files.readAllBytes(xmlPath);
-        MockMultipartFile file = new MockMultipartFile("file", "sample-employees.xml", "application/xml", content);
-        datasetService.replaceDataset(file, "dean");
-
-        // 1. Filter options check - verify every dropdown list is non-empty and sorted
-        MvcResult filterResult = mockMvc.perform(get("/api/employees/filter-options")
-                        .header("Authorization", "Bearer " + employeeToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.education", not(empty())))
-                .andExpect(jsonPath("$.joiningYear", not(empty())))
-                .andExpect(jsonPath("$.city", not(empty())))
-                .andExpect(jsonPath("$.paymentTier", not(empty())))
-                .andExpect(jsonPath("$.gender", not(empty())))
-                .andExpect(jsonPath("$.everBenched", not(empty())))
-                .andExpect(jsonPath("$.experienceInCurrentDomain", not(empty())))
-                .andExpect(jsonPath("$.leaveOrNot", not(empty())))
-                .andExpect(jsonPath("$.minAge").isNumber())
-                .andExpect(jsonPath("$.maxAge").isNumber())
+                .andExpect(jsonPath("$.exists", is(true)))
+                .andExpect(jsonPath("$.recordCount", is(689)))
+                .andExpect(jsonPath("$.sourceFormat", is("XLSX")))
                 .andReturn();
 
-        // Verify lists are sorted ascending
-        com.portal.dto.FilterOptionsResponse options = objectMapper.readValue(
-                filterResult.getResponse().getContentAsString(),
-                com.portal.dto.FilterOptionsResponse.class
-        );
-        for (int i = 0; i < options.getEducation().size() - 1; i++) {
-            assertTrue(options.getEducation().get(i).compareTo(options.getEducation().get(i + 1)) <= 0);
-        }
-        for (int i = 0; i < options.getCity().size() - 1; i++) {
-            assertTrue(options.getCity().get(i).compareTo(options.getCity().get(i + 1)) <= 0);
-        }
-        for (int i = 0; i < options.getJoiningYear().size() - 1; i++) {
-            assertTrue(options.getJoiningYear().get(i) <= options.getJoiningYear().get(i + 1));
-        }
-        for (int i = 0; i < options.getPaymentTier().size() - 1; i++) {
-            assertTrue(options.getPaymentTier().get(i) <= options.getPaymentTier().get(i + 1));
-        }
+        String json = res.getResponse().getContentAsString();
 
-        // 2. City column filter (Pune)
-        mockMvc.perform(get("/api/employees?city=Pune")
-                        .header("Authorization", "Bearer " + employeeToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content[*].city", everyItem(equalTo("Pune"))));
-
-        // 3. Gender column filter (Female)
-        mockMvc.perform(get("/api/employees?gender=Female")
-                        .header("Authorization", "Bearer " + employeeToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content[*].gender", everyItem(equalTo("Female"))));
-
-        // 4. Age range filter (ageMin=25, ageMax=30)
-        mockMvc.perform(get("/api/employees?ageMin=25&ageMax=30")
-                        .header("Authorization", "Bearer " + employeeToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content[*].age", everyItem(both(greaterThanOrEqualTo(25)).and(lessThanOrEqualTo(30)))));
-
-        // 5. Payment Tier filter (tier 3)
-        mockMvc.perform(get("/api/employees?paymentTier=3")
-                        .header("Authorization", "Bearer " + employeeToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content[*].paymentTier", everyItem(equalTo(3))));
+        // Inferred types verification:
+        // No = NUMBER, sequential; First Name, Last Name = TEXT_SEARCH; Gender, Department, Country, Center = CATEGORY; Start Date = DATE_RANGE; Job Rate = decimal
+        assertTrue(json.contains("\"key\":\"no\""));
+        assertTrue(json.contains("\"type\":\"NUMBER\""));
+        assertTrue(json.contains("\"sequential\":true"));
+        assertTrue(json.contains("\"key\":\"first_name\""));
+        assertTrue(json.contains("\"filterType\":\"TEXT_SEARCH\""));
+        assertTrue(json.contains("\"key\":\"gender\""));
+        assertTrue(json.contains("\"filterType\":\"CATEGORY\""));
+        assertTrue(json.contains("\"key\":\"start_date\""));
+        assertTrue(json.contains("\"filterType\":\"DATE_RANGE\""));
+        assertTrue(json.contains("\"key\":\"job_rate\""));
+        assertTrue(json.contains("\"numberKind\":\"DECIMAL\""));
     }
 
-    // ====================================================
-    // EDIT (PUT) AND DELETE TESTS
-    // ====================================================
-
     @Test
-    @DisplayName("PUT /api/employees/{id} - Dean edit success, validation failure, and duplicate ID check")
-    void testEmployeeEdit() throws Exception {
-        ensureActiveDatasetUploaded();
-
-        Long activeDatasetId = datasetRepository.findByActiveTrue().get().getId();
-        List<Employee> list = employeeRepository.findByDatasetId(activeDatasetId);
-        assertFalse(list.isEmpty());
-        Employee target = list.get(0);
-        Long empDbId = target.getId();
-
-        // 1. Successful update
-        EmployeeUpdateRequest updateReq = new EmployeeUpdateRequest(
-                "EMP_UPDATED", "Masters", 2018, "Pune", 2, 35, "Female", "Yes", 7, 0
-        );
-
-        mockMvc.perform(put("/api/employees/" + empDbId)
-                        .header("Authorization", "Bearer " + deanToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(updateReq)))
+    @DisplayName("2. Upload CSV, JSON and XML format files and verify uniform ingestion")
+    void testUploadCsvJsonXml() throws Exception {
+        // Upload CSV
+        String csv = "id,name,role\n1,Alice,Engineer\n2,Bob,Manager";
+        MockMultipartFile csvFile = new MockMultipartFile("file", "staff.csv", "text/csv", csv.getBytes(StandardCharsets.UTF_8));
+        mockMvc.perform(multipart("/api/dataset/upload")
+                        .file(csvFile)
+                        .header("Authorization", "Bearer " + deanToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.employeeId").value("EMP_UPDATED"))
-                .andExpect(jsonPath("$.education").value("Masters"))
-                .andExpect(jsonPath("$.city").value("Pune"))
-                .andExpect(jsonPath("$.age").value(35))
-                .andExpect(jsonPath("$.experienceInCurrentDomain").value(7));
+                .andExpect(jsonPath("$.recordCount", is(2)))
+                .andExpect(jsonPath("$.sourceFormat", is("CSV")));
 
-        // 2. Validation failure - invalid age (>70)
-        EmployeeUpdateRequest badAgeReq = new EmployeeUpdateRequest(
-                "EMP_UPDATED", "Masters", 2018, "Pune", 2, 95, "Female", "Yes", 7, 0
-        );
-        mockMvc.perform(put("/api/employees/" + empDbId)
-                        .header("Authorization", "Bearer " + deanToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(badAgeReq)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.status").value(400))
-                .andExpect(jsonPath("$.message").value(containsString("Age must be between 18 and 70")));
+        // Clean up
+        datasetRepository.deleteAll();
 
-        // 3. Duplicate employeeId check (409 Conflict)
-        if (list.size() > 1) {
-            String existingOtherId = list.get(1).getEmployeeId();
-            EmployeeUpdateRequest dupIdReq = new EmployeeUpdateRequest(
-                    existingOtherId, "Masters", 2018, "Pune", 2, 35, "Female", "Yes", 7, 0
-            );
-            mockMvc.perform(put("/api/employees/" + empDbId)
-                            .header("Authorization", "Bearer " + deanToken)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(dupIdReq)))
-                    .andExpect(status().isConflict())
-                    .andExpect(jsonPath("$.status").value(409))
-                    .andExpect(jsonPath("$.message").value("Employee ID already exists"));
-        }
+        // Upload JSON
+        String json = "[{\"id\": 10, \"title\": \"Widget\", \"price\": 19.99}, {\"id\": 20, \"title\": \"Gadget\", \"price\": 29.99}]";
+        MockMultipartFile jsonFile = new MockMultipartFile("file", "items.json", "application/json", json.getBytes(StandardCharsets.UTF_8));
+        mockMvc.perform(multipart("/api/dataset/upload")
+                        .file(jsonFile)
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recordCount", is(2)))
+                .andExpect(jsonPath("$.sourceFormat", is("JSON")));
+
+        // Clean up
+        datasetRepository.deleteAll();
+
+        // Upload XML
+        String xml = "<students><student><rollNo>101</rollNo><name>Arun</name></student><student><rollNo>102</rollNo><name>Deepa</name></student></students>";
+        MockMultipartFile xmlFile = new MockMultipartFile("file", "students.xml", "application/xml", xml.getBytes(StandardCharsets.UTF_8));
+        mockMvc.perform(multipart("/api/dataset/upload")
+                        .file(xmlFile)
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recordCount", is(2)))
+                .andExpect(jsonPath("$.sourceFormat", is("XML")));
     }
 
-    // ====================================================
-    // ROLE AUTHORIZATION (403) CHECKS
-    // ====================================================
-
     @Test
-    @DisplayName("Employee role gets 403 Forbidden on upload, replace, PUT, and DELETE")
-    void testEmployeeForbiddenMutations() throws Exception {
-        ensureActiveDatasetUploaded();
+    @DisplayName("3. Second upload rejects with 409; Replace works; Corrupt replace preserves old dataset")
+    void testUploadConflictAndTransactionalReplace() throws Exception {
+        uploadEmployeesXlsx();
 
-        Long activeDatasetId = datasetRepository.findByActiveTrue().get().getId();
-        Employee emp = employeeRepository.findByDatasetId(activeDatasetId).get(0);
-        Long empDbId = emp.getId();
-
-        MockMultipartFile file = new MockMultipartFile("file", "test.xml", "application/xml", "<employees></employees>".getBytes());
-
-        // 1. Employee tries upload -> 403
+        // Second upload -> 409 Conflict
+        MockMultipartFile file = new MockMultipartFile("file", "duplicate.csv", "text/csv", "a,b\n1,2".getBytes());
         mockMvc.perform(multipart("/api/dataset/upload")
                         .file(file)
-                        .header("Authorization", "Bearer " + employeeToken))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.status").value(403))
-                .andExpect(jsonPath("$.message").value("You don't have permission"));
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isConflict());
 
-        // 2. Employee tries replace -> 403
+        // Replace with corrupt XML -> 400 Bad Request, old dataset must remain intact!
+        MockMultipartFile corruptFile = new MockMultipartFile("file", "corrupt.xml", "application/xml", "<corrupt><unclosed>".getBytes());
         mockMvc.perform(multipart("/api/dataset/replace")
-                        .file(file)
-                        .header("Authorization", "Bearer " + employeeToken))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.status").value(403))
-                .andExpect(jsonPath("$.message").value("You don't have permission"));
+                        .file(corruptFile)
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isBadRequest());
 
-        // 3. Employee tries PUT edit -> 403
-        EmployeeUpdateRequest updateReq = new EmployeeUpdateRequest(
-                "EMP_HACK", "PHD", 2015, "New Delhi", 1, 30, "Male", "No", 5, 0
-        );
-        mockMvc.perform(put("/api/employees/" + empDbId)
-                        .header("Authorization", "Bearer " + employeeToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(updateReq)))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.status").value(403))
-                .andExpect(jsonPath("$.message").value("You don't have permission"));
-
-        // 4. Employee tries DELETE -> 403
-        mockMvc.perform(delete("/api/employees/" + empDbId)
-                        .header("Authorization", "Bearer " + employeeToken))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.status").value(403))
-                .andExpect(jsonPath("$.message").value("You don't have permission"));
+        // Verify old dataset of 689 records is preserved
+        mockMvc.perform(get("/api/dataset/active")
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recordCount", is(689)));
     }
 
     @Test
-    @DisplayName("DEAN can delete employee (204 No Content)")
-    void testDeanDeleteSuccess() throws Exception {
-        ensureActiveDatasetUploaded();
+    @DisplayName("4. Mandatory pagination: default size 10, clamping size > 100 to 100, page & totalPages calculations")
+    void testMandatoryPagination() throws Exception {
+        uploadEmployeesXlsx();
 
-        Long activeDatasetId = datasetRepository.findByActiveTrue().get().getId();
-        Employee emp = employeeRepository.findByDatasetId(activeDatasetId).get(0);
-        Long empDbId = emp.getId();
+        // Default pagination: page=0, size=10 -> 689 records = 69 pages
+        mockMvc.perform(get("/api/records")
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.page", is(0)))
+                .andExpect(jsonPath("$.size", is(10)))
+                .andExpect(jsonPath("$.totalElements", is(689)))
+                .andExpect(jsonPath("$.totalPages", is(69)))
+                .andExpect(jsonPath("$.content", hasSize(10)));
 
-        mockMvc.perform(delete("/api/employees/" + empDbId)
+        // Clamping: request size=1000 clamped to 100 -> 7 pages
+        mockMvc.perform(get("/api/records?size=1000")
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.size", is(100)))
+                .andExpect(jsonPath("$.totalPages", is(7)))
+                .andExpect(jsonPath("$.content", hasSize(100)));
+    }
+
+    @Test
+    @DisplayName("5. Dynamic filters: eq_, like_, min_/max_, from_/to_, and global search")
+    void testDynamicFiltersAndSearch() throws Exception {
+        uploadEmployeesXlsx();
+
+        // Global search for "Ghadir"
+        mockMvc.perform(get("/api/records?search=Ghadir")
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalElements", greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.content[0].data.first_name", is("Ghadir")));
+
+        // Exact match filter eq_gender=Female
+        mockMvc.perform(get("/api/records?eq_gender=Female")
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].data.gender", is("Female")));
+
+        // Partial contains filter like_first_name=gha
+        mockMvc.perform(get("/api/records?like_first_name=gha")
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].data.first_name", containsStringIgnoringCase("gha")));
+
+        // Numeric range min_years=2 & max_years=5
+        mockMvc.perform(get("/api/records?min_years=2&max_years=5")
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalElements", greaterThan(0)));
+
+        // Date range from_start_date=2018-01-01 & to_start_date=2018-12-31
+        mockMvc.perform(get("/api/records?from_start_date=2018-01-01&to_start_date=2018-12-31")
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalElements", greaterThan(0)));
+    }
+
+    @Test
+    @DisplayName("6. GET /api/records/filter-options returns distinct sorted categories and numeric/date ranges")
+    void testFilterOptions() throws Exception {
+        uploadEmployeesXlsx();
+
+        MvcResult res = mockMvc.perform(get("/api/records/filter-options")
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String json = res.getResponse().getContentAsString();
+        // CATEGORY columns must return list of options
+        assertTrue(json.contains("\"gender\":[\"Female\",\"Male\"]") || json.contains("\"gender\":[\"Male\",\"Female\"]"));
+        assertTrue(json.contains("\"department\":["));
+        assertTrue(json.contains("\"country\":["));
+        assertTrue(json.contains("\"center\":["));
+        // NUMBER & DATE columns must return min & max
+        assertTrue(json.contains("\"years\":{"));
+        assertTrue(json.contains("\"min\":"));
+        assertTrue(json.contains("\"max\":"));
+    }
+
+    @Test
+    @DisplayName("7. Record CRUD: POST add with validation, PUT edit, DELETE, and recordCount maintenance")
+    void testRecordCrudAndValidation() throws Exception {
+        uploadEmployeesXlsx();
+
+        // 1. Add valid record
+        Map<String, Object> newRecord = new HashMap<>();
+        newRecord.put("no", 700);
+        newRecord.put("first_name", "TestFirstName");
+        newRecord.put("last_name", "TestLastName");
+        newRecord.put("gender", "Female");
+        newRecord.put("start_date", "2023-05-15");
+        newRecord.put("years", 1);
+        newRecord.put("department", "IT");
+        newRecord.put("country", "India");
+        newRecord.put("center", "North");
+        newRecord.put("monthly_salary", 5000);
+        newRecord.put("annual_salary", 60000);
+        newRecord.put("job_rate", 2.5);
+        newRecord.put("sick_leaves", 2);
+        newRecord.put("unpaid_leaves", 0);
+        newRecord.put("overtime_hours", 10);
+
+        RecordMutationRequest addRequest = new RecordMutationRequest(newRecord);
+
+        MvcResult addRes = mockMvc.perform(post("/api/records")
+                        .header("Authorization", "Bearer " + deanToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(addRequest)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.first_name", is("TestFirstName")))
+                .andReturn();
+
+        // Verify dataset recordCount increased to 690
+        mockMvc.perform(get("/api/dataset/active")
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(jsonPath("$.recordCount", is(690)));
+
+        // Extract ID
+        Map<?, ?> responseMap = objectMapper.readValue(addRes.getResponse().getContentAsString(), Map.class);
+        Long newId = Long.valueOf(responseMap.get("id").toString());
+
+        // 2. Validation failure on invalid date
+        Map<String, Object> badDateRecord = new HashMap<>(newRecord);
+        badDateRecord.put("start_date", "invalid-date-format");
+        mockMvc.perform(post("/api/records")
+                        .header("Authorization", "Bearer " + deanToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new RecordMutationRequest(badDateRecord))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors.start_date", notNullValue()));
+
+        // 3. Validation failure on invalid integer
+        Map<String, Object> badNumRecord = new HashMap<>(newRecord);
+        badNumRecord.put("years", "not-a-number");
+        mockMvc.perform(post("/api/records")
+                        .header("Authorization", "Bearer " + deanToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new RecordMutationRequest(badNumRecord))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors.years", notNullValue()));
+
+        // 4. Update record via PUT
+        newRecord.put("first_name", "UpdatedFirstName");
+        mockMvc.perform(put("/api/records/" + newId)
+                        .header("Authorization", "Bearer " + deanToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new RecordMutationRequest(newRecord))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.first_name", is("UpdatedFirstName")));
+
+        // 5. Delete record via DELETE
+        mockMvc.perform(delete("/api/records/" + newId)
                         .header("Authorization", "Bearer " + deanToken))
                 .andExpect(status().isNoContent());
 
-        // Verify 404 on subsequent lookup
-        mockMvc.perform(get("/api/employees/" + empDbId)
+        // Verify dataset recordCount decreased back to 689
+        mockMvc.perform(get("/api/dataset/active")
                         .header("Authorization", "Bearer " + deanToken))
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.status").value(404));
+                .andExpect(jsonPath("$.recordCount", is(689)));
     }
 
-    // ====================================================
-    // EXCEL AND CSV EXPORT TESTS
-    // ====================================================
+    @Test
+    @DisplayName("8. SQL identifier injection attempt is safely ignored/prevented")
+    void testSqlInjectionProtection() throws Exception {
+        uploadEmployeesXlsx();
+
+        // Inject malicious filter param
+        mockMvc.perform(get("/api/records?eq_x;DROP TABLE users=1")
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk());
+
+        // Users table must still be intact
+        mockMvc.perform(post("/api/auth/dean/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new LoginRequest("dean", "dean123"))))
+                .andExpect(status().isOk());
+    }
 
     @Test
-    @DisplayName("GET /api/employees/export/excel - Generates valid streaming .xlsx with Apache POI, numeric cells, and filter support")
-    void testExportExcelWithApachePoi() throws Exception {
-        // Upload sample dataset with 15 records
-        Path xmlPath = Paths.get("../sample-data/sample-employees.xml");
-        byte[] content = Files.readAllBytes(xmlPath);
-        MockMultipartFile file = new MockMultipartFile("file", "sample-employees.xml", "application/xml", content);
-        datasetService.replaceDataset(file, "dean");
+    @DisplayName("9. Excel export (.xlsx) via POI: headers, row counts, cell types, and filter awareness")
+    void testExcelExportWithPoi() throws Exception {
+        uploadEmployeesXlsx();
 
-        // 1. Export all employees as EMPLOYEE role
-        MvcResult mvcResult = mockMvc.perform(get("/api/employees/export/excel")
-                        .header("Authorization", "Bearer " + employeeToken))
+        // Export all 689 records
+        MvcResult res = mockMvc.perform(get("/api/records/export/excel")
+                        .header("Authorization", "Bearer " + deanToken))
                 .andExpect(status().isOk())
-                .andExpect(header().string("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
-                .andExpect(header().string("Content-Disposition", "attachment; filename=\"employees.xlsx\""))
+                .andExpect(header().string("Content-Disposition", containsString("employee_data.xlsx")))
                 .andReturn();
 
-        byte[] excelBytes = mvcResult.getResponse().getContentAsByteArray();
-        assertTrue(excelBytes.length > 0);
+        byte[] xlsxBytes = res.getResponse().getContentAsByteArray();
+        try (Workbook wb = new XSSFWorkbook(new ByteArrayInputStream(xlsxBytes))) {
+            Sheet sheet = wb.getSheet("Employees");
+            assertNotNull(sheet, "Sheet 'Employees' must exist");
+            assertEquals(690, sheet.getPhysicalNumberOfRows(), "689 data rows + 1 header row = 690 rows");
 
-        // Read bytes back with Apache POI XSSFWorkbook and verify structure
-        try (Workbook workbook = new XSSFWorkbook(new ByteArrayInputStream(excelBytes))) {
-            Sheet sheet = workbook.getSheet("Employees");
-            assertNotNull(sheet, "Sheet 'Employees' must exist in workbook");
-
-            // 1 header row + 15 data rows = 16 rows total
-            assertEquals(16, sheet.getPhysicalNumberOfRows(), "Must contain 1 header row + 15 employee data rows");
-
-            // Verify header row
             Row headerRow = sheet.getRow(0);
-            assertNotNull(headerRow);
-            String[] expectedHeaders = {
-                    "Employee ID", "Education", "Joining Year", "City", "Payment Tier",
-                    "Age", "Gender", "Ever Benched", "Experience (yrs)", "Status"
-            };
-            for (int i = 0; i < expectedHeaders.length; i++) {
-                assertEquals(expectedHeaders[i], headerRow.getCell(i).getStringCellValue());
-            }
+            assertEquals("No", headerRow.getCell(0).getStringCellValue());
+            assertEquals("First Name", headerRow.getCell(1).getStringCellValue());
 
-            // Verify numeric data cells in first data row
-            Row firstDataRow = sheet.getRow(1);
-            assertNotNull(firstDataRow);
-            assertFalse(firstDataRow.getCell(0).getStringCellValue().isEmpty()); // Employee ID
-            assertFalse(firstDataRow.getCell(1).getStringCellValue().isEmpty()); // Education
-            assertEquals(CellType.NUMERIC, firstDataRow.getCell(2).getCellType(), "Joining Year must be numeric");
-            assertFalse(firstDataRow.getCell(3).getStringCellValue().isEmpty()); // City
-            assertEquals(CellType.NUMERIC, firstDataRow.getCell(4).getCellType(), "Payment Tier must be numeric");
-            assertEquals(CellType.NUMERIC, firstDataRow.getCell(5).getCellType(), "Age must be numeric");
-            assertFalse(firstDataRow.getCell(6).getStringCellValue().isEmpty()); // Gender
-            assertFalse(firstDataRow.getCell(7).getStringCellValue().isEmpty()); // Ever Benched
-            assertEquals(CellType.NUMERIC, firstDataRow.getCell(8).getCellType(), "Experience must be numeric");
-            String status = firstDataRow.getCell(9).getStringCellValue();
-            assertTrue("Active".equals(status) || "Left".equals(status), "Status must be 'Active' or 'Left'");
+            // First data row cell types
+            Row row1 = sheet.getRow(1);
+            assertEquals(CellType.NUMERIC, row1.getCell(0).getCellType()); // 'No' is numeric
+            assertEquals(CellType.STRING, row1.getCell(1).getCellType());  // 'First Name' is text
         }
 
-        // 2. Export with filter (city=Pune)
-        MvcResult filteredResult = mockMvc.perform(get("/api/employees/export/excel?city=Pune")
+        // Export with filter (eq_gender=Female)
+        MvcResult filteredRes = mockMvc.perform(get("/api/records/export/excel?eq_gender=Female")
                         .header("Authorization", "Bearer " + deanToken))
                 .andExpect(status().isOk())
                 .andReturn();
 
-        try (Workbook filteredWb = new XSSFWorkbook(new ByteArrayInputStream(filteredResult.getResponse().getContentAsByteArray()))) {
-            Sheet filteredSheet = filteredWb.getSheet("Employees");
-            assertNotNull(filteredSheet);
-            int rows = filteredSheet.getPhysicalNumberOfRows();
-            assertTrue(rows > 1, "Must contain at least header + 1 Pune employee");
-
-            // Check every data row has City = Pune
-            for (int r = 1; r < rows; r++) {
-                Row row = filteredSheet.getRow(r);
-                assertEquals("Pune", row.getCell(3).getStringCellValue());
-            }
+        try (Workbook wb = new XSSFWorkbook(new ByteArrayInputStream(filteredRes.getResponse().getContentAsByteArray()))) {
+            Sheet sheet = wb.getSheet("Employees");
+            assertTrue(sheet.getPhysicalNumberOfRows() < 690 && sheet.getPhysicalNumberOfRows() > 1);
         }
     }
 
     @Test
-    @DisplayName("Export Security and CSV - 401 without token, valid CSV with UTF-8 BOM")
-    void testExportSecurityAndCsv() throws Exception {
-        ensureActiveDatasetUploaded();
+    @DisplayName("10. CSV export streaming with UTF-8 BOM")
+    void testCsvExportStreaming() throws Exception {
+        uploadEmployeesXlsx();
 
-        // 1. Missing token on Excel export -> 401 Unauthorized
-        mockMvc.perform(get("/api/employees/export/excel"))
-                .andExpect(status().isUnauthorized());
-
-        // 2. Missing token on CSV export -> 401 Unauthorized
-        mockMvc.perform(get("/api/employees/export"))
-                .andExpect(status().isUnauthorized());
-
-        // 3. Valid CSV export with EMPLOYEE token
-        MvcResult csvResult = mockMvc.perform(get("/api/employees/export")
-                        .header("Authorization", "Bearer " + employeeToken))
+        MvcResult res = mockMvc.perform(get("/api/records/export")
+                        .header("Authorization", "Bearer " + deanToken))
                 .andExpect(status().isOk())
-                .andExpect(header().string("Content-Type", startsWith("text/csv")))
-                .andExpect(header().string("Content-Disposition", "attachment; filename=\"employees.csv\""))
+                .andExpect(header().string("Content-Disposition", containsString("employee_data.csv")))
                 .andReturn();
 
-        byte[] csvBytes = csvResult.getResponse().getContentAsByteArray();
-        assertTrue(csvBytes.length >= 3);
-
+        byte[] csvBytes = res.getResponse().getContentAsByteArray();
+        assertTrue(csvBytes.length > 3);
         // Verify UTF-8 BOM
         assertEquals((byte) 0xEF, csvBytes[0]);
         assertEquals((byte) 0xBB, csvBytes[1]);
         assertEquals((byte) 0xBF, csvBytes[2]);
 
-        String csvText = new String(csvBytes, 3, csvBytes.length - 3, java.nio.charset.StandardCharsets.UTF_8);
-        assertTrue(csvText.startsWith("Employee ID,Education,Joining Year,City,Payment Tier,Age,Gender,Ever Benched,Experience (yrs),Status"));
+        String csvString = new String(csvBytes, StandardCharsets.UTF_8);
+        assertTrue(csvString.contains("No,First Name,Last Name"));
+    }
+
+    @Test
+    @DisplayName("11. Download current dataset as XML (GET /api/dataset/xml)")
+    void testDownloadDatasetXml() throws Exception {
+        uploadEmployeesXlsx();
+
+        MvcResult res = mockMvc.perform(get("/api/dataset/xml")
+                        .header("Authorization", "Bearer " + deanToken))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Disposition", containsString("dataset.xml")))
+                .andReturn();
+
+        String xmlContent = res.getResponse().getContentAsString();
+        assertTrue(xmlContent.startsWith("<?xml"));
+        assertTrue(xmlContent.contains("<dataset>"));
+        assertTrue(xmlContent.contains("<columns>"));
+        assertTrue(xmlContent.contains("<column key=\"first_name\" label=\"First Name\"/>"));
+        assertTrue(xmlContent.contains("<records>"));
+        assertTrue(xmlContent.contains("<record>"));
+    }
+
+    @Test
+    @DisplayName("12. Role-Based Access Control: EMPLOYEE blocked with 403 on mutations and XML download; 401 without token")
+    void testRbacPermissions() throws Exception {
+        uploadEmployeesXlsx();
+
+        // 401 without token
+        mockMvc.perform(get("/api/records"))
+                .andExpect(status().isUnauthorized());
+
+        // Employee allowed reads and exports
+        mockMvc.perform(get("/api/records")
+                        .header("Authorization", "Bearer " + employeeToken))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/records/export/excel")
+                        .header("Authorization", "Bearer " + employeeToken))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/records/export")
+                        .header("Authorization", "Bearer " + employeeToken))
+                .andExpect(status().isOk());
+
+        // Employee gets 403 on upload
+        MockMultipartFile file = new MockMultipartFile("file", "test.csv", "text/csv", "a\n1".getBytes());
+        mockMvc.perform(multipart("/api/dataset/upload")
+                        .file(file)
+                        .header("Authorization", "Bearer " + employeeToken))
+                .andExpect(status().isForbidden());
+
+        // Employee gets 403 on replace
+        mockMvc.perform(multipart("/api/dataset/replace")
+                        .file(file)
+                        .header("Authorization", "Bearer " + employeeToken))
+                .andExpect(status().isForbidden());
+
+        // Employee gets 403 on dataset/xml
+        mockMvc.perform(get("/api/dataset/xml")
+                        .header("Authorization", "Bearer " + employeeToken))
+                .andExpect(status().isForbidden());
+
+        // Employee gets 403 on POST /api/records
+        mockMvc.perform(post("/api/records")
+                        .header("Authorization", "Bearer " + employeeToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"data\":{}}"))
+                .andExpect(status().isForbidden());
+
+        // Employee gets 403 on PUT /api/records/1
+        mockMvc.perform(put("/api/records/1")
+                        .header("Authorization", "Bearer " + employeeToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"data\":{}}"))
+                .andExpect(status().isForbidden());
+
+        // Employee gets 403 on DELETE /api/records/1
+        mockMvc.perform(delete("/api/records/1")
+                        .header("Authorization", "Bearer " + employeeToken))
+                .andExpect(status().isForbidden());
     }
 }

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<students>
+    <student>
+        <rollNo>STU101</rollNo>
+        <name>Arun Kumar</name>
+        <course>B.Tech Computer Science</course>
+        <department>Engineering</department>
+        <year>3</year>
+        <cgpa>8.4</cgpa>
+        <city>Chennai</city>
+        <hostel>true</hostel>
+    </student>
+    <student>
+        <rollNo>STU102</rollNo>
+        <name>Deepika Sharma</name>
+        <course>M.Tech AI</course>
+        <department>Engineering</department>
+        <year>1</year>
+        <cgpa>9.2</cgpa>
+        <city>Bangalore</city>
+        <hostel>false</hostel>
+    </student>
+    <student>
+        <rollNo>STU103</rollNo>
+        <name>Rahul Verma</name>
+        <course>MBA</course>
+        <department>Management</department>
+        <year>2</year>
+        <cgpa>7.8</cgpa>
+        <city>Mumbai</city>
+        <hostel>true</hostel>
+    </student>
+    <student>
+        <rollNo>STU104</rollNo>
+        <name>Priya Nair</name>
+        <course>B.Tech Electronics</course>
+        <department>Engineering</department>
+        <year>4</year>
+        <cgpa>8.9</cgpa>
+        <city>Kochi</city>
+        <hostel>true</hostel>
+    </student>
+    <student>
+        <rollNo>STU105</rollNo>
+        <name>Ananya Roy</name>
+        <course>M.Sc Data Science</course>
+        <department>Science</department>
+        <year>2</year>
+        <cgpa>9.5</cgpa>
+        <city>Kolkata</city>
+        <hostel>false</hostel>
+    </student>
+</students>

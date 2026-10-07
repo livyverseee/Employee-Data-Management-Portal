@@ -8,7 +8,7 @@ import EmployeeModal from '../components/EmployeeModal';
 import {
   getEmployeesApi,
   deleteEmployeeApi,
-  exportCsvApi,
+  exportExcelApi,
 } from '../services/api';
 
 /**
@@ -94,8 +94,8 @@ export default function Dashboard({ role }) {
     }
   };
 
-  // Export CSV with current filters
-  const handleExportCsv = async () => {
+  // Export Excel with current filters
+  const handleExportExcel = async () => {
     setExporting(true);
     setError(null);
 
@@ -105,14 +105,15 @@ export default function Dashboard({ role }) {
     if (filters.gender) params.gender = filters.gender;
 
     try {
-      const response = await exportCsvApi(params);
+      const response = await exportExcelApi(params);
 
-      // Trigger browser download via Blob and temporary <a> element
-      const blob = new Blob([response.data], { type: 'text/csv;charset=utf-8;' });
+      const blob = new Blob([response.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', 'employees.csv');
+      link.setAttribute('download', 'employee_data.xlsx');
       document.body.appendChild(link);
       link.click();
       link.parentNode.removeChild(link);
@@ -121,7 +122,7 @@ export default function Dashboard({ role }) {
       if (err.response && err.response.status === 403) {
         setError("You don't have permission");
       } else {
-        const msg = err.response?.data?.message || err.message || 'Failed to export CSV';
+        const msg = err.response?.data?.message || err.message || 'Failed to export Excel';
         setError(msg);
       }
     } finally {
@@ -150,10 +151,10 @@ export default function Dashboard({ role }) {
           <button
             type="button"
             className="btn btn-outline"
-            onClick={handleExportCsv}
+            onClick={handleExportExcel}
             disabled={exporting || totalElements === 0}
           >
-            {exporting ? 'Preparing CSV...' : 'Export CSV'}
+            {exporting ? 'Preparing Excel...' : 'Export Excel'}
           </button>
         </div>
 

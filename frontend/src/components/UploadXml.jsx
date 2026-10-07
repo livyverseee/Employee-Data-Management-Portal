@@ -2,21 +2,28 @@ import React, { useState, useRef } from 'react';
 import { uploadDatasetApi } from '../services/api';
 
 /**
- * UploadXml / DatasetUploadCard component for DEAN role.
- * Used for initial dataset onboarding when no dataset is active.
+ * Centered "Upload Employee Data" card for DEAN role when no dataset exists.
+ * Accepts: .xlsx, .csv, .json, .xml
+ * Explains that the file is converted to XML and stored.
  */
-export default function UploadXml({ onUploadSuccess, isOnboarding = false }) {
+export default function UploadXml({ onUploadSuccess, isOnboarding = true }) {
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
+  const [success, setSuccess] = useState(null);
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef(null);
+
+  const isAcceptedFormat = (fileName) => {
+    const lower = fileName.toLowerCase();
+    return lower.endsWith('.xlsx') || lower.endsWith('.csv') || lower.endsWith('.json') || lower.endsWith('.xml');
+  };
 
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files.length > 0) {
       const selected = e.target.files[0];
-      if (!selected.name.toLowerCase().endsWith('.xml')) {
-        setError('Only .xml files are supported');
+      if (!isAcceptedFormat(selected.name)) {
+        setError('Accepted formats: .xlsx, .csv, .json, .xml');
         setFile(null);
         return;
       }
@@ -42,8 +49,8 @@ export default function UploadXml({ onUploadSuccess, isOnboarding = false }) {
 
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       const selected = e.dataTransfer.files[0];
-      if (!selected.name.toLowerCase().endsWith('.xml')) {
-        setError('Only .xml files are supported');
+      if (!isAcceptedFormat(selected.name)) {
+        setError('Accepted formats: .xlsx, .csv, .json, .xml');
         setFile(null);
         return;
       }
@@ -55,15 +62,17 @@ export default function UploadXml({ onUploadSuccess, isOnboarding = false }) {
   const handleUpload = async (e) => {
     e.preventDefault();
     if (!file) {
-      setError('Please select an XML file to upload');
+      setError('Please select a file to upload (.xlsx, .csv, .json, .xml)');
       return;
     }
 
     setUploading(true);
     setError(null);
+    setSuccess(null);
 
     try {
       const res = await uploadDatasetApi(file);
+      setSuccess(`Dataset "${file.name}" uploaded, converted to XML, and indexed successfully!`);
       setFile(null);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
@@ -72,7 +81,7 @@ export default function UploadXml({ onUploadSuccess, isOnboarding = false }) {
         onUploadSuccess(res.data);
       }
     } catch (err) {
-      const serverMessage = err.response?.data?.message || err.message || 'Failed to upload XML file';
+      const serverMessage = err.response?.data?.message || err.message || 'Failed to upload file';
       setError(serverMessage);
     } finally {
       setUploading(false);
@@ -82,16 +91,19 @@ export default function UploadXml({ onUploadSuccess, isOnboarding = false }) {
   return (
     <div className={`upload-card ${isOnboarding ? 'onboarding-upload-card' : ''}`}>
       <div className="upload-header">
-        <div className="upload-icon-circle">📁</div>
-        <h3>{isOnboarding ? 'No Dataset Uploaded Yet' : 'Upload Employee Dataset'}</h3>
+        <div className="upload-icon-circle">📂</div>
+        <h3>Upload Employee Data</h3>
         <p className="upload-subtitle">
-          {isOnboarding
-            ? 'Get started by uploading an employee XML dataset. Once uploaded, all employee records will be parsed, validated, and indexed.'
-            : 'Select an employee XML file to ingest into the portal.'}
+          Upload any flat structured table (.xlsx, .csv, .json, .xml).
+          The file is automatically converted to internal XML, schema types are inferred, and records are stored in a dedicated table.
+        </p>
+        <p style={{ fontSize: '0.8rem', color: '#6b7280', marginTop: '4px' }}>
+          Limits: 10 MB maximum, up to 100,000 rows, 60 columns.
         </p>
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
+      {success && <div className="alert alert-success">{success}</div>}
 
       <form onSubmit={handleUpload} className="upload-form-box">
         <div
@@ -105,7 +117,7 @@ export default function UploadXml({ onUploadSuccess, isOnboarding = false }) {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".xml"
+            accept=".xlsx,.csv,.json,.xml"
             onChange={handleFileChange}
             disabled={uploading}
             style={{ display: 'none' }}
@@ -133,9 +145,9 @@ export default function UploadXml({ onUploadSuccess, isOnboarding = false }) {
             ) : (
               <div>
                 <p className="dropzone-text">
-                  <strong>Click to browse</strong> or drag & drop an XML file here
+                  <strong>Click to browse</strong> or drag & drop your data file here
                 </p>
-                <p className="dropzone-hint">Supports sample-employees.xml or full dataset (.xml)</p>
+                <p className="dropzone-hint">Accepted formats: .xlsx, .csv, .json, .xml</p>
               </div>
             )}
           </div>
@@ -147,7 +159,7 @@ export default function UploadXml({ onUploadSuccess, isOnboarding = false }) {
             className="btn btn-primary btn-lg"
             disabled={!file || uploading}
           >
-            {uploading ? 'Processing XML & Ingesting...' : 'Upload & Initialize Dataset'}
+            {uploading ? 'Converting to XML & Ingesting...' : 'Upload & Process Dataset'}
           </button>
         </div>
       </form>

@@ -3,12 +3,8 @@ import AuthCard from '../../components/AuthCard';
 
 /**
  * Dean Portal Authentication Page (/dean/login):
- * Renders Sign In and Register tabs with Dean access code requirement.
+ * Renders Sign In and Register tabs with authentic wave header styling.
  */
 export default function DeanLoginPage() {
-  return (
-    <div className="portal-auth-page portal-theme-dean">
-      <AuthCard portal="DEAN" />
-    </div>
-  );
+  return <AuthCard portal="DEAN" />;
 }

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<products>
+    <product>
+        <productId>PROD001</productId>
+        <title>Ultra HD Monitor 27-inch</title>
+        <category>Electronics</category>
+        <brand>Dell</brand>
+        <price>349.99</price>
+        <stock>45</stock>
+        <rating>4.7</rating>
+        <available>true</available>
+    </product>
+    <product>
+        <productId>PROD002</productId>
+        <title>Mechanical Keyboard Wireless</title>
+        <category>Accessories</category>
+        <brand>Logitech</brand>
+        <price>129.50</price>
+        <stock>120</stock>
+        <rating>4.5</rating>
+        <available>true</available>
+    </product>
+    <product>
+        <productId>PROD003</productId>
+        <title>Ergonomic Office Chair</title>
+        <category>Furniture</category>
+        <brand>Herman Miller</brand>
+        <price>899.00</price>
+        <stock>15</stock>
+        <rating>4.9</rating>
+        <available>true</available>
+    </product>
+    <product>
+        <productId>PROD004</productId>
+        <title>Noise-Cancelling Headphones</title>
+        <category>Audio</category>
+        <brand>Sony</brand>
+        <price>299.99</price>
+        <stock>80</stock>
+        <rating>4.8</rating>
+        <available>true</available>
+    </product>
+    <product>
+        <productId>PROD005</productId>
+        <title>USB-C Docking Station</title>
+        <category>Accessories</category>
+        <brand>Anker</brand>
+        <price>79.99</price>
+        <stock>200</stock>
+        <rating>4.3</rating>
+        <available>false</available>
+    </product>
+</products>
